@@ -1,0 +1,18 @@
+[package]
+name = "Plonky2-lib"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+plonky2 = { version = "0.1.4", default-features = false, features = ["gate_testing", "rand_chacha", "std", "parallel"]}
+plonky2_u32 = { git = "https://github.com/0xPolygonZero/plonky2-u32.git", rev = "f652088"}
+num = { version = "0.4.0", default-features = false }
+anyhow = { version = "1.0.40", default-features = false }
+hex = { version = "0.4.3" }
+
+[dev-dependencies]
+rand = { version = "0.8.4", default-features = false, features = ["getrandom"] }
+sha2 = { version = "0.10.6" }
+sha3 = { version = "0.10.6" }
