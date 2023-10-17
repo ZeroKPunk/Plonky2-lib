@@ -11,7 +11,10 @@ plonky2 = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", d
 plonky2_u32 = { git = "https://github.com/ZeroKPunk/plonky2-u32.git",  branch = "main" }
 num = { version = "0.4.0", default-features = false }
 anyhow = { version = "1.0.40", default-features = false }
-hex = { version = "0.4.3" }
+hex = { version = "0.4.3", features = ["serde"]}
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8.5"
 
 [dev-dependencies]
 rand = { version = "0.8.4", default-features = false, features = ["getrandom"] }
