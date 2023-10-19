@@ -161,7 +161,7 @@ pub fn verify_smt_process_proof<
 ) {
     let enabled = proof.fnc != ProcessMerkleProofRole::ProcessNoOp;
 
-    // remove proof は old と new をひっくり返せば insert proof になる
+    // remove proof becomes insert proof by flipping old and new
     let (fnc, old_key, old_value, old_root, new_key, new_value, new_root) =
         if proof.fnc == ProcessMerkleProofRole::ProcessDelete {
             (
@@ -204,7 +204,7 @@ pub fn verify_smt_process_proof<
     assert_eq!(n2b_old.len(), n2b_new.len());
 
     let mut siblings = proof.siblings.clone();
-    assert!(siblings.len() < n2b_new.len()); // siblings の長さは Merkle path の長さより小さい
+    assert!(siblings.len() < n2b_new.len()); // The length of siblings is less than the length of Merkle path
     siblings.resize(n2b_new.len(), I::default());
     let lev_ins = smt_lev_ins(&siblings, enabled);
 
@@ -228,7 +228,7 @@ pub fn verify_smt_process_proof<
         prev = st;
     }
 
-    // 最後の status は top でも btn　でもない.
+    // The last status is neither top nor btn.
     {
         let last_status = *sm.last().unwrap();
         assert!(last_status != ProcessorStatus::Top && last_status != ProcessorStatus::Bottom);
