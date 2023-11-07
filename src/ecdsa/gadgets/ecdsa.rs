@@ -60,8 +60,10 @@ mod tests {
     use super::*;
     use crate::ecdsa::curve::curve_types::CurveScalar;
     use crate::ecdsa::curve::ecdsa::{sign_message, ECDSAPublicKey, ECDSASecretKey, ECDSASignature};
+    use crate::profiling_enable;
 
     fn test_ecdsa_circuit_with_config(config: CircuitConfig) -> Result<()> {
+        profiling_enable();
         const D: usize = 2;
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
@@ -92,8 +94,9 @@ mod tests {
         verify_message_circuit(&mut builder, msg_target, sig_target, pk_target);
 
         dbg!(builder.num_gates());
-        let data = builder.build::<C>();
+        let data: plonky2::plonk::circuit_data::CircuitData<plonky2::field::goldilocks_field::GoldilocksField, PoseidonGoldilocksConfig, 2> = builder.build::<C>();
         let proof = data.prove(pw).unwrap();
+        println!("proof PIS {:?}", proof.public_inputs);
         data.verify(proof)
     }
 

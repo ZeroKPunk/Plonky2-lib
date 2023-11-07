@@ -188,6 +188,7 @@ mod tests {
 
     use crate::hash::CircuitBuilderHash;
     use crate::hash::keccak256::{CircuitBuilderHashKeccak, WitnessHashKeccak, KECCAK256_R};
+    use crate::profiling_enable;
 
     #[test]
     fn test_keccak256_short() {
@@ -249,6 +250,7 @@ mod tests {
 
     #[test]
     fn test_keccak256_long() {
+        profiling_enable();
         let tests = [
             [
                 // storage proof
