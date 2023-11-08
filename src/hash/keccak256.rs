@@ -180,6 +180,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderHashKeccak<F, D
 #[cfg(test)]
 mod tests {
     use hex;
+    use plonky2::field::types::PrimeField64;
     use plonky2::iop::witness::PartialWitness;
     use plonky2::plonk::circuit_builder::CircuitBuilder;
     use plonky2::plonk::circuit_data::CircuitConfig;
@@ -219,6 +220,7 @@ mod tests {
         let mut builder = CircuitBuilder::<F, D>::new(config);
         let hash_target = builder.add_virtual_hash_input_target(1, KECCAK256_R);
         let hash_output = builder.hash_keccak256(&hash_target);
+        builder.public_hash_output(&hash_output);
         let num_gates = builder.num_gates();
         // let copy_constraints = builder.copy_constraints.len();
         let copy_constraints = "<private>";
@@ -283,6 +285,7 @@ mod tests {
         let mut builder = CircuitBuilder::<F, D>::new(config);
         let hash_target = builder.add_virtual_hash_input_target(4, KECCAK256_R);
         let hash_output = builder.hash_keccak256(&hash_target);
+        builder.public_hash_output(&hash_output);
         let num_gates = builder.num_gates();
         // let copy_constraints = builder.copy_constraints.len();
         let copy_constraints = "<private>";
@@ -308,6 +311,28 @@ mod tests {
             pw.set_keccak256_output_target(&hash_output, &output);
 
             let proof = data.prove(pw).unwrap();
+            println!("public inputs {:?}", proof.public_inputs);
+            //transform the public_inputs to hash string
+            let mut public_inputs = Vec::new();
+            let mut pi_u8 = Vec::new();
+            for i in proof.public_inputs.iter() {
+                // transform Golidlocks Feilds to u32
+                let mut tmp = i.to_canonical_u64();
+                // transform u64 to big eidian u8
+                
+                for _ in 0..4 {
+                    pi_u8.push((tmp & 0xff) as u8);
+                    tmp >>= 8;
+                }
+                public_inputs.push(tmp);
+            }
+            // transform tmp_u8 to hex string, every u8 element is 2 hex char
+            let mut public_inputs_hex = String::new();
+            for i in pi_u8.iter() {
+                public_inputs_hex.push_str(&format!("{:02x}", i));
+            }
+            assert_eq!(public_inputs_hex, t[1]);
+            println!("public inputs hex {:?}", public_inputs_hex);
             assert!(data.verify(proof).is_ok());
         }
     }

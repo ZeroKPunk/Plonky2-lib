@@ -123,6 +123,8 @@ pub trait CircuitBuilderHash<F: RichField + Extendable<D>, const D: usize> {
         blocks_input_bits: usize,
     ) -> HashInputTarget;
 
+    fn public_hash_output(&mut self, _target: &HashOutputTarget);
+
     fn add_virtual_hash_public_input(
         &mut self,
         blocks_num: usize,
@@ -194,6 +196,12 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderHash<F, D>
             input_bits,
             input,
             blocks,
+        }
+    }
+
+    fn public_hash_output(&mut self, _target: &HashOutputTarget) {
+        for i in 0.._target.num_limbs() {
+            self.register_public_input(_target.limbs[i].0);
         }
     }
 
