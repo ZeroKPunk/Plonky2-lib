@@ -84,10 +84,12 @@ pub fn batch_verify_message_circuit<F: RichField + Extendable<D>, const D: usize
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use plonky2::field::types::Sample;
+    use plonky2::field::types::{Sample, PrimeField};
     use plonky2::iop::witness::PartialWitness;
     use plonky2::plonk::circuit_data::CircuitConfig;
     use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
+    use crate::ecdsa::curve::secp256k1;
+    use crate::ecdsa::gadgets::biguint::WitnessBigUint;
 
     use super::*;
     use crate::ecdsa::curve::curve_types::CurveScalar;
@@ -158,22 +160,23 @@ mod tests {
 
         type Curve = Secp256K1;
 
-        let pw = PartialWitness::new();
         let mut builder = CircuitBuilder::<F, D>::new(config);
 
-        let msg = Secp256K1Scalar::rand();
-        let msg_target = builder.constant_nonnative(msg);
+        let msg_target = builder.add_virtual_nonnative_target();
+        let msg_biguint_target = builder.nonnative_to_canonical_biguint(&msg_target);
+        
+        // let pk_target = ECDSAPublicKeyTarget(builder.constant_affine_point(pk.0));
+        // TODO: builder.constant_affine_point(pk.0) has an extra debug_assert!(!point.zero);
+        let pk_target  = ECDSAPublicKeyTarget(builder.add_virtual_affine_point_target());
+        let pk_x_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.x); 
+        let pk_y_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.y);
 
-        let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
-        let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
-
-        let pk_target = ECDSAPublicKeyTarget(builder.constant_affine_point(pk.0));
-
-        let sig = sign_message(msg, sk);
-
-        let ECDSASignature { r, s } = sig;
-        let r_target = builder.constant_nonnative(r);
-        let s_target = builder.constant_nonnative(s);
+        let r_target = builder.add_virtual_nonnative_target();
+        let r_biguint_target = builder.nonnative_to_canonical_biguint(&r_target);
+        
+        let s_target = builder.add_virtual_nonnative_target();
+        let s_biguint_target = builder.nonnative_to_canonical_biguint(&s_target);
+        
         let sig_target = ECDSASignatureTarget {
             r: r_target,
             s: s_target,
@@ -183,9 +186,37 @@ mod tests {
 
         dbg!(builder.num_gates());
         let data: plonky2::plonk::circuit_data::CircuitData<plonky2::field::goldilocks_field::GoldilocksField, PoseidonGoldilocksConfig, 2> = builder.build::<C>();
-        let proof = data.prove(pw).unwrap();
-        println!("proof PIS {:?}", proof.public_inputs);
-        data.verify(proof)
+        
+        for _ in 0..3{
+            let mut pw = PartialWitness::new();
+
+            let msg = Secp256K1Scalar::rand();
+
+            let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
+            let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
+
+            let sig = sign_message(msg, sk);
+
+            let ECDSASignature { r, s } = sig;
+
+            let msg_biguint = msg.to_canonical_biguint();
+            let pk_x_biguint = pk.0.x.to_canonical_biguint();
+            let pk_y_biguint = pk.0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
+
+            pw.set_biguint_target(&msg_biguint_target, &msg_biguint);
+            pw.set_biguint_target(&r_biguint_target, &r_biguint);
+            pw.set_biguint_target(&s_biguint_target, &s_biguint);
+            pw.set_biguint_target(&pk_x_biguint_target, &pk_x_biguint);
+            pw.set_biguint_target(&pk_y_biguint_target, &pk_y_biguint);
+            
+            let proof = data.prove(pw).unwrap();
+            println!("proof PIS {:?}", proof.public_inputs);
+            println!("prove success!!!");
+            assert!(data.verify(proof).is_ok());
+        }
+        Ok(())
     }
 
     #[test]
