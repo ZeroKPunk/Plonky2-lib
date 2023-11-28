@@ -87,7 +87,7 @@ mod tests {
     use plonky2::field::types::{Sample, PrimeField};
     use plonky2::iop::witness::PartialWitness;
     use plonky2::plonk::circuit_data::CircuitConfig;
-    use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
+    use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig, Poseidon2GoldilocksConfig};
     use crate::ecdsa::curve::secp256k1;
     use crate::ecdsa::gadgets::biguint::WitnessBigUint;
 
@@ -98,9 +98,6 @@ mod tests {
 
     /// Generate a batch of ECDSA data
     fn gen_batch_ecdsa_data<F: RichField + Extendable<D>, const D: usize>(batch_num: usize, builder: &mut CircuitBuilder<F, D>) -> (Vec<NonNativeTarget<Secp256K1Scalar>>, Vec<ECDSASignatureTarget<Secp256K1>>, Vec<ECDSAPublicKeyTarget<Secp256K1>>) {
-        const D: usize = 2;
-        type C = PoseidonGoldilocksConfig;
-        type F = <C as GenericConfig<D>>::F;
 
         type Curve = Secp256K1;
         let mut msgs = Vec::with_capacity(batch_num);
@@ -132,11 +129,9 @@ mod tests {
     fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) -> Result<()> {
         profiling_enable();
         const D: usize = 2;
-        type C = PoseidonGoldilocksConfig;
+        type C = Poseidon2GoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
-
-        type Curve = Secp256K1;
-        println!("BATCH SIZE {}", batch_num);
+        println!("BATCH SIZE {} GenericConfig {}", batch_num, C::config_type());
 
         let pw = PartialWitness::new();
         let mut builder = CircuitBuilder::<F, D>::new(config);
@@ -146,7 +141,7 @@ mod tests {
         batch_verify_message_circuit(&mut builder, msg_target_list, sig_target_list, pk_target_list);
 
         dbg!(builder.num_gates());
-        let data: plonky2::plonk::circuit_data::CircuitData<plonky2::field::goldilocks_field::GoldilocksField, PoseidonGoldilocksConfig, 2> = builder.build::<C>();
+        let data = builder.build::<C>();
         let proof = data.prove(pw).unwrap();
         println!("proof PIS {:?}", proof.public_inputs);
         data.verify(proof)
