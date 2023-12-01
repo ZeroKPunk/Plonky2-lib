@@ -2,8 +2,37 @@ use core::marker::PhantomData;
 
 use plonky2::field::extension::Extendable;
 use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
+use plonky2::field::types::PrimeField;
+use plonky2::gadgets::arithmetic::EqualityGenerator;
+use plonky2::gadgets::split_base::BaseSumGenerator;
+use plonky2::gates::arithmetic_base::{ArithmeticBaseGenerator, ArithmeticGate};
+use plonky2::gates::arithmetic_extension::ArithmeticExtensionGate;
+use plonky2::gates::base_sum::{BaseSumGate, BaseSplitGenerator};
+use plonky2::gates::constant::ConstantGate;
+use plonky2::gates::coset_interpolation::CosetInterpolationGate;
+use plonky2::gates::exponentiation::ExponentiationGate;
+use plonky2::gates::lookup::LookupGate;
+use plonky2::gates::lookup_table::LookupTableGate;
+use plonky2::gates::multiplication_extension::MulExtensionGate;
+use plonky2::gates::noop::NoopGate;
+use plonky2::gates::poseidon::{PoseidonGenerator, PoseidonGate};
+use plonky2::gates::poseidon2::{Poseidon2Generator, Poseidon2Gate};
+use plonky2::gates::poseidon_mds::{PoseidonMdsGenerator, PoseidonMdsGate};
+use plonky2::gates::public_input::PublicInputGate;
+use plonky2::gates::random_access::{RandomAccessGate, RandomAccessGenerator};
+use plonky2::gates::reducing::ReducingGate;
+use plonky2::gates::reducing_extension::ReducingExtensionGate;
 use plonky2::hash::hash_types::RichField;
+use plonky2::iop::generator::{ConstantGenerator, RandomValueGenerator};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2::plonk::config::{GenericConfig, AlgebraicHasher};
+use plonky2::recursion::dummy_circuit::DummyProofGenerator;
+use plonky2::util::serialization::{WitnessGeneratorSerializer, GateSerializer};
+use plonky2_u32::gates::add_many_u32::{U32AddManyGate, U32AddManyGenerator};
+use plonky2_u32::gates::arithmetic_u32::{U32ArithmeticGate, U32ArithmeticGenerator};
+use plonky2_u32::gates::comparison::{ComparisonGate, ComparisonGenerator};
+use plonky2_u32::gates::range_check_u32::{U32RangeCheckGate, U32RangeCheckGenerator};
+use plonky2_u32::gates::subtraction_u32::{U32SubtractionGate, U32SubtractionGenerator};
 
 use crate::ecdsa::curve::curve_types::Curve;
 use crate::ecdsa::curve::secp256k1::Secp256K1;
@@ -11,7 +40,14 @@ use crate::ecdsa::gadgets::curve::{AffinePointTarget, CircuitBuilderCurve};
 use crate::ecdsa::gadgets::curve_fixed_base::fixed_base_curve_mul_circuit;
 use crate::ecdsa::gadgets::glv::CircuitBuilderGlv;
 use crate::ecdsa::gadgets::nonnative::{CircuitBuilderNonNative, NonNativeTarget};
+use plonky2::{get_generator_tag_impl, impl_generator_serializer, read_generator_impl, impl_gate_serializer, get_gate_tag_impl, read_gate_impl};
 
+use super::glv::GLVDecompositionGenerator;
+use super::nonnative::{NonNativeMultiplicationGenerator, NonNativeAdditionGenerator, NonNativeInverseGenerator, NonNativeSubtractionGenerator};
+
+use ethers_core::{
+    utils::keccak256,
+};
 #[derive(Clone, Debug)]
 pub struct ECDSASecretKeyTarget<C: Curve>(pub NonNativeTarget<C::ScalarField>);
 
@@ -23,6 +59,76 @@ pub struct ECDSASignatureTarget<C: Curve> {
     pub r: NonNativeTarget<C::ScalarField>,
     pub s: NonNativeTarget<C::ScalarField>,
 }
+
+pub struct CustomGateSerializer;
+
+impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for CustomGateSerializer
+{
+    impl_gate_serializer! {
+        DefaultGateSerializer,
+        ArithmeticGate,
+        ArithmeticExtensionGate<D>,
+        BaseSumGate<4>,
+        ConstantGate,
+        CosetInterpolationGate<F, D>,
+        ComparisonGate<F, D>,
+        ExponentiationGate<F, D>,
+        LookupGate,
+        LookupTableGate,
+        MulExtensionGate<D>,
+        NoopGate,
+        // PoseidonMdsGate<F, D>,
+        // PoseidonGate<F, D>,
+        Poseidon2Gate<F, D>,
+        PublicInputGate,
+        RandomAccessGate<F, D>,
+        ReducingExtensionGate<D>,
+        ReducingGate<D>,
+        U32AddManyGate<F, D>,
+        U32ArithmeticGate<F, D>,
+        U32RangeCheckGate<F, D>,
+        U32SubtractionGate<F, D>
+    }
+}
+
+pub struct CustomGeneratorSerializer<C: GenericConfig<D>, FF: PrimeField, const D: usize> {
+    pub _phantom: PhantomData<C>,
+    pub _phantom2: PhantomData<FF>,
+}
+
+impl<F,FF, C, const D: usize> WitnessGeneratorSerializer<F, D> for CustomGeneratorSerializer<C,FF, D>
+where
+    F: RichField + Extendable<D>,
+    C: GenericConfig<D, F = F> + 'static,
+    C::Hasher: AlgebraicHasher<F>,
+    FF: PrimeField,
+{
+    impl_generator_serializer! {
+        // CustomGeneratorSerializer,
+        DummyProofGenerator<F, C, D>,
+        ArithmeticBaseGenerator<F, D>,
+        ConstantGenerator<F>,
+        // PoseidonGenerator<F, D>,
+        // PoseidonMdsGenerator<D>,
+        Poseidon2Generator<F, D>,
+        RandomValueGenerator,
+        BaseSumGenerator<4>,
+        NonNativeMultiplicationGenerator<F, D, FF>,
+        NonNativeAdditionGenerator<F, D, FF>,
+        NonNativeInverseGenerator<F, D, FF>,
+        NonNativeSubtractionGenerator<F, D, FF>,
+        GLVDecompositionGenerator<F, D>,
+        U32RangeCheckGenerator<F, D>,
+        EqualityGenerator,
+        U32ArithmeticGenerator<F, D>,
+        U32AddManyGenerator<F, D>,
+        ComparisonGenerator<F,D>,
+        BaseSplitGenerator<2>,
+        RandomAccessGenerator<F, D>,
+        U32SubtractionGenerator<F, D>
+    }
+}
+
 
 pub fn verify_message_circuit<F: RichField + Extendable<D>, const D: usize>(
     builder: &mut CircuitBuilder<F, D>,
@@ -83,13 +189,20 @@ pub fn batch_verify_message_circuit<F: RichField + Extendable<D>, const D: usize
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{File, self};
+    use std::io::{Write, BufReader};
+    use std::io::prelude::*;
+
     use anyhow::Result;
     use plonky2::field::types::{Sample, PrimeField};
     use plonky2::iop::witness::PartialWitness;
-    use plonky2::plonk::circuit_data::CircuitConfig;
+    use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
     use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig, Poseidon2GoldilocksConfig};
+    use plonky2::util::serialization::{DefaultGateSerializer, DefaultGeneratorSerializer};
+    use sha3::Sha3_256;
     use crate::ecdsa::curve::secp256k1;
     use crate::ecdsa::gadgets::biguint::WitnessBigUint;
+    use crate::hash::keccak256;
 
     use super::*;
     use crate::ecdsa::curve::curve_types::CurveScalar;
@@ -97,7 +210,7 @@ mod tests {
     use crate::profiling_enable;
 
     /// Generate a batch of ECDSA data
-    fn gen_batch_ecdsa_data<F: RichField + Extendable<D>, const D: usize>(batch_num: usize, builder: &mut CircuitBuilder<F, D>) -> (Vec<NonNativeTarget<Secp256K1Scalar>>, Vec<ECDSASignatureTarget<Secp256K1>>, Vec<ECDSAPublicKeyTarget<Secp256K1>>) {
+    fn gen_batch_ecdsa_data(batch_num: usize) -> (Vec<Secp256K1Scalar>, Vec<ECDSASignature<Secp256K1>>, Vec<ECDSAPublicKey<Secp256K1>>) {
 
         type Curve = Secp256K1;
         let mut msgs = Vec::with_capacity(batch_num);
@@ -105,23 +218,15 @@ mod tests {
         let mut pks = Vec::with_capacity(batch_num);
         for i in 0..batch_num {
             let msg = Secp256K1Scalar::rand();
-            let msg_target = builder.constant_nonnative(msg);
             let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
             let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
-            let pk_target = ECDSAPublicKeyTarget(builder.constant_affine_point(pk.0));
             let sig = sign_message(msg, sk);
-
             let ECDSASignature { r, s } = sig;
-            let r_target = builder.constant_nonnative(r);
-            let s_target = builder.constant_nonnative(s);
-            let sig_target = ECDSASignatureTarget {
-                r: r_target,
-                s: s_target,
-            };
-            msgs.push(msg_target);
-            pks.push(pk_target);
-            sigs.push(sig_target);
+            msgs.push(msg);
+            pks.push(pk);
+            sigs.push(sig);
         };
+       
         (msgs, sigs, pks)
         
     }
@@ -133,18 +238,163 @@ mod tests {
         type F = <C as GenericConfig<D>>::F;
         println!("BATCH SIZE {} GenericConfig {}", batch_num, C::config_type());
 
-        let pw = PartialWitness::new();
         let mut builder = CircuitBuilder::<F, D>::new(config);
 
-        let (msg_target_list, sig_target_list, pk_target_list) = gen_batch_ecdsa_data(batch_num, &mut builder);
+        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
-        batch_verify_message_circuit(&mut builder, msg_target_list, sig_target_list, pk_target_list);
+        let mut v_msg_target = Vec::with_capacity(batch_num);
+        let mut v_msg_biguint_target = Vec::with_capacity(batch_num);
+        let mut v_pk_target = Vec::with_capacity(batch_num);
+        let mut v_pk_x_biguint_target = Vec::with_capacity(batch_num);
+        let mut v_pk_y_biguint_target = Vec::with_capacity(batch_num);
+        let mut v_r_biguint_target = Vec::with_capacity(batch_num);
+        let mut v_s_biguint_target = Vec::with_capacity(batch_num);
+        let mut v_sig_target = Vec::with_capacity(batch_num);
+
+        for _i in 0..batch_num {
+            
+            let msg_target: NonNativeTarget<Secp256K1Scalar> = builder.add_virtual_nonnative_target();
+            let msg_biguint_target = builder.nonnative_to_canonical_biguint(&msg_target);
+            
+            // let pk_target = ECDSAPublicKeyTarget(builder.constant_affine_point(pk.0));
+            // TODO: builder.constant_affine_point(pk.0) has an extra debug_assert!(!point.zero);
+            let pk_target: ECDSAPublicKeyTarget<Secp256K1>  = ECDSAPublicKeyTarget(builder.add_virtual_affine_point_target());
+            let pk_x_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.x); 
+            let pk_y_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.y);
+    
+            let r_target: NonNativeTarget<Secp256K1Scalar> = builder.add_virtual_nonnative_target();
+            let r_biguint_target = builder.nonnative_to_canonical_biguint(&r_target);
+            
+            let s_target: NonNativeTarget<_> = builder.add_virtual_nonnative_target();
+            let s_biguint_target = builder.nonnative_to_canonical_biguint(&s_target);
+            
+            let sig_target: ECDSASignatureTarget<Secp256K1> = ECDSASignatureTarget {
+                r: r_target,
+                s: s_target,
+            };
+            v_msg_target.push(msg_target);
+            v_msg_biguint_target.push(msg_biguint_target);
+            v_pk_target.push(pk_target);
+            v_pk_x_biguint_target.push(pk_x_biguint_target);
+            v_pk_y_biguint_target.push(pk_y_biguint_target);
+            v_r_biguint_target.push(r_biguint_target);
+            v_s_biguint_target.push(s_biguint_target);
+            v_sig_target.push(sig_target);
+        };
+
+
+        batch_verify_message_circuit(&mut builder, v_msg_target, v_sig_target, v_pk_target);
 
         dbg!(builder.num_gates());
+
+        let gate_serializer = CustomGateSerializer;
+
+        let generator_serializer = CustomGeneratorSerializer {
+            _phantom: PhantomData::<C>,
+            _phantom2: PhantomData::<F>,
+        };
+
+        // let path = std::path::Path::new("data/data_bytes");
+        // let data = if path.exists() {
+        //     println!("Reading data");
+        //     let circuit_data_bytes = std::fs::read(path).unwrap();
+        //     let circuit_data = CircuitData::<F, C, D>::from_bytes(&circuit_data_bytes, &gate_serializer, &generator_serializer).unwrap();
+        //     circuit_data
+        // } else {
+        //     let data = builder.build::<C>();
+        //     let data_bytes = data
+        //     .to_bytes(&gate_serializer, &generator_serializer)
+        //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
+        //     println!("Writing data");
+        //     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        //     let mut file = File::create(path).unwrap();
+        //     file.write_all(&data_bytes).unwrap();
+        //     data
+        // };
+
+      
+        
         let data = builder.build::<C>();
+        let circuit_data_bytes = data
+        .to_bytes(&gate_serializer, &generator_serializer)
+        .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
+        println!("Writing data");
+
+        println!("Reading data");
+        let data_from_bytes = CircuitData::<F, C, D>::from_bytes(&circuit_data_bytes, &gate_serializer, &generator_serializer).unwrap();
+        assert_eq!(data_from_bytes, data);
+        assert_eq!(data_from_bytes.common, data.common);
+        assert_eq!(data_from_bytes.prover_only, data.prover_only);
+        assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
+
+        let circuit_2_data_bytes = data_from_bytes
+                                                        .to_bytes(&gate_serializer, &generator_serializer)
+                                                        .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
+
+        let data_2_from_bytes = CircuitData::<F, C, D>::from_bytes(&circuit_2_data_bytes, &gate_serializer, &generator_serializer).unwrap();
+        assert_eq!(data_2_from_bytes, data_from_bytes);
+
+        // hash circuit_2_data_bytes with keccak256
+        // let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
+        // let hash_common_2 = keccak256(data_from_bytes.common.to_bytes(&gate_serializer).unwrap());
+        // assert_eq!(hash_common_1, hash_common_2);
+
+        // let hash_verify_1 = keccak256(data.verifier_only.to_bytes().unwrap());
+        // let hash_verify_2 = keccak256(data_from_bytes.verifier_only.to_bytes().unwrap());
+        // assert_eq!(hash_verify_1, hash_verify_2);
+
+        // let hash_prover_1 = keccak256(data.prover_only.to_bytes(&generator_serializer, &data.common).unwrap());
+        // let hash_prover_2 = keccak256(data_from_bytes.prover_only.to_bytes(&generator_serializer, &data_from_bytes.common).unwrap());
+        // assert_eq!(hash_prover_1, hash_prover_2);
+        
+        // First Proof
+        let mut pw = PartialWitness::new();
+        for i in 0..batch_num {
+            let ECDSASignature { r, s } = sig_list[i];
+
+            let msg_biguint = msg_list[i].to_canonical_biguint();
+            let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+            let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
+
+            pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+            pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+            pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+            pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+            pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+        }
+       
         let proof = data.prove(pw).unwrap();
+       
         println!("proof PIS {:?}", proof.public_inputs);
-        data.verify(proof)
+        data.verify(proof).unwrap();
+
+        // Second Proof
+        // let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
+        // let mut pw = PartialWitness::new();
+        // for i in 0..batch_num {
+        //     let ECDSASignature { r, s } = sig_list[i];
+
+        //     let msg_biguint = msg_list[i].to_canonical_biguint();
+        //     let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+        //     let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+        //     let r_biguint = r.to_canonical_biguint();
+        //     let s_biguint = s.to_canonical_biguint();
+
+        //     pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+        //     pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+        //     pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+        //     pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+        //     pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+        // }
+       
+        // let proof = data.prove(pw).unwrap();
+
+       
+        // println!("proof PIS {:?}", proof.public_inputs);
+        // data.verify(proof);
+        Ok(())
     }
 
     fn test_ecdsa_circuit_with_config(config: CircuitConfig) -> Result<()> {
