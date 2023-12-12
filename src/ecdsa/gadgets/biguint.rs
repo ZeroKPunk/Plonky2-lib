@@ -18,7 +18,6 @@ use plonky2_u32::witness::{GeneratedValuesU32, WitnessU32};
 
 use crate::ecdsa::serialization::{ReadBigUintTarget, WriteBigUintTarget};
 
-
 #[derive(Clone, Debug, Default)]
 pub struct BigUintTarget {
     pub limbs: Vec<U32Target>,
@@ -31,6 +30,10 @@ impl BigUintTarget {
 
     pub fn get_limb(&self, i: usize) -> U32Target {
         self.limbs[i]
+    }
+
+    pub fn to_vec_target(&self) -> Vec<Target> {
+        self.limbs.iter().map(|u32_target| u32_target.0).collect()
     }
 }
 
