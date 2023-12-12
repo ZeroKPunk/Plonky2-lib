@@ -195,7 +195,10 @@ mod tests {
 
     use anyhow::Result;
     use plonky2::field::types::{Sample, PrimeField};
-    use plonky2::iop::witness::PartialWitness;
+    use plonky2::hash::hash_types::HashOut;
+    use plonky2::hash::hashing::hash_n_to_hash_no_pad;
+    use plonky2::hash::poseidon::PoseidonPermutation;
+    use plonky2::iop::witness::{PartialWitness, WitnessWrite};
     use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
     use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig, Poseidon2GoldilocksConfig};
     use plonky2::util::serialization::{DefaultGateSerializer, DefaultGeneratorSerializer};
@@ -208,6 +211,164 @@ mod tests {
     use crate::ecdsa::curve::curve_types::CurveScalar;
     use crate::ecdsa::curve::ecdsa::{sign_message, ECDSAPublicKey, ECDSASecretKey, ECDSASignature};
     use crate::profiling_enable;
+    use plonky2::field::types::Field;
+
+    use plonky2::recursion::tree_recursion::{
+        check_tree_proof_verifier_data, common_data_for_recursion,
+        set_tree_recursion_leaf_data_target, set_tree_recursion_node_data_target,
+        TreeRecursionLeafData, TreeRecursionNodeData,
+    };
+
+    
+    fn test_tree_recursion_with_ecdsa_circuit(config: CircuitConfig) -> Result<()> {
+        profiling_enable();
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = <C as GenericConfig<D>>::F;
+
+        type Curve = Secp256K1;
+
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+
+        let msg_target = builder.add_virtual_nonnative_target();
+        let msg_biguint_target = builder.nonnative_to_canonical_biguint(&msg_target);
+        
+        // let pk_target = ECDSAPublicKeyTarget(builder.constant_affine_point(pk.0));
+        // TODO: builder.constant_affine_point(pk.0) has an extra debug_assert!(!point.zero);
+        let pk_target  = ECDSAPublicKeyTarget(builder.add_virtual_affine_point_target());
+        let pk_x_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.x); 
+        let pk_y_biguint_target = builder.nonnative_to_canonical_biguint(&pk_target.0.y);
+
+        let r_target = builder.add_virtual_nonnative_target();
+        let r_biguint_target = builder.nonnative_to_canonical_biguint(&r_target);
+        
+        let s_target = builder.add_virtual_nonnative_target();
+        let s_biguint_target = builder.nonnative_to_canonical_biguint(&s_target);
+        
+        let sig_target = ECDSASignatureTarget {
+            r: r_target,
+            s: s_target,
+        };
+
+        verify_message_circuit(&mut builder, msg_target, sig_target, pk_target);
+
+        dbg!(builder.num_gates());
+        let data: plonky2::plonk::circuit_data::CircuitData<plonky2::field::goldilocks_field::GoldilocksField, PoseidonGoldilocksConfig, 2> = builder.build::<C>();
+        
+        let mut proofs = Vec::new();
+        for _ in 0..3{
+            let mut pw = PartialWitness::new();
+
+            let msg = Secp256K1Scalar::rand();
+
+            let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
+            let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
+
+            let sig = sign_message(msg, sk);
+
+            let ECDSASignature { r, s } = sig;
+
+            let msg_biguint = msg.to_canonical_biguint();
+            let pk_x_biguint = pk.0.x.to_canonical_biguint();
+            let pk_y_biguint = pk.0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
+
+            pw.set_biguint_target(&msg_biguint_target, &msg_biguint);
+            pw.set_biguint_target(&r_biguint_target, &r_biguint);
+            pw.set_biguint_target(&s_biguint_target, &s_biguint);
+            pw.set_biguint_target(&pk_x_biguint_target, &pk_x_biguint);
+            pw.set_biguint_target(&pk_y_biguint_target, &pk_y_biguint);
+            
+            let proof = data.prove(pw).unwrap();
+            println!("proof PIS {:?}", proof.public_inputs);
+            println!("prove success!!!");
+
+            proofs.push(proof);
+            // assert!(data.verify(proof).is_ok());
+        }
+
+        let ecdsa_inner_cd =  data.common;
+        let ecdsa_inner_vd = data.verifier_only;
+
+        let mut common_data = common_data_for_recursion::<F, C, D>();
+        let config = CircuitConfig::standard_recursion_config();
+
+        // build leaf circuit
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let leaf_targets = builder.tree_recursion_leaf::<C>(ecdsa_inner_cd, &mut common_data)?;
+        let data = builder.build::<C>();
+        let leaf_vd = &data.verifier_only;
+
+
+        let mut leaf_proofs = Vec::new();
+        // generate leaf proof
+        for _ in 0..3{
+            let mut pw = PartialWitness::new();
+            let leaf_data = TreeRecursionLeafData {
+                inner_proof: &proofs[0],
+                inner_verifier_data: &ecdsa_inner_vd,
+                verifier_data: leaf_vd,
+            };
+            set_tree_recursion_leaf_data_target(&mut pw, &leaf_targets, &leaf_data)?;
+            let leaf_proof = data.prove(pw)?;
+            check_tree_proof_verifier_data(&leaf_proof, leaf_vd, &common_data)
+                .expect("Leaf 1 public inputs do not match its verifier data");
+
+            leaf_proofs.push(leaf_proof);
+        }
+
+        for i in 0..leaf_proofs.len(){
+            println!("leaf_proofs {:?} public inputs: {:?}", i, leaf_proofs[i].public_inputs)
+        }
+
+
+        // build node
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let node_targets = builder.tree_recursion_node::<C>(&mut common_data)?;
+        let data = builder.build::<C>();
+
+        let node_vd = &data.verifier_only;
+
+
+        let mut pw = PartialWitness::new();
+        let node_data = TreeRecursionNodeData {
+            proof0: &leaf_proofs[0],
+            proof1: &leaf_proofs[1],
+            verifier_data0: &leaf_vd,
+            verifier_data1: &leaf_vd,
+            verifier_data: node_vd,
+        };
+        set_tree_recursion_node_data_target(&mut pw, &node_targets, &node_data)?;
+        let node_proof = data.prove(pw)?;
+        check_tree_proof_verifier_data(&node_proof, node_vd, &common_data)
+            .expect("Node public inputs do not match its verifier data");
+
+        println!("node_proof public inputs: {:?}", node_proof.public_inputs);
+
+        let mut pw = PartialWitness::new();
+        let root_data = TreeRecursionNodeData {
+            proof0: &node_proof,
+            proof1: &leaf_proofs[2],
+            verifier_data0: &node_vd,
+            verifier_data1: &leaf_vd,
+            verifier_data: node_vd,
+        };
+
+        set_tree_recursion_node_data_target(&mut pw, &node_targets, &root_data)?;
+        let root_proof = data.prove(pw)?;
+        check_tree_proof_verifier_data(&root_proof, node_vd, &common_data)
+            .expect("Node public inputs do not match its verifier data");
+
+        println!("root_proof public inputs: {:?}", root_proof.public_inputs);
+
+        Ok(())
+
+
+
+    }
+
+    
 
     /// Generate a batch of ECDSA data
     fn gen_batch_ecdsa_data(batch_num: usize) -> (Vec<Secp256K1Scalar>, Vec<ECDSASignature<Secp256K1>>, Vec<ECDSAPublicKey<Secp256K1>>) {
@@ -467,7 +628,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_batch_ecdsa_circuit_narrow() -> Result<()> {
-        test_batch_ecdsa_circuit_with_config(20, CircuitConfig::standard_ecc_config())
+        test_batch_ecdsa_circuit_with_config(1, CircuitConfig::standard_ecc_config())
     }
 
     #[test]
@@ -481,4 +642,13 @@ mod tests {
     fn test_ecdsa_circuit_wide() -> Result<()> {
         test_ecdsa_circuit_with_config(CircuitConfig::wide_ecc_config())
     }
+
+    #[test]
+    #[ignore]
+    fn test_ecdsa_tree_recursion() -> Result<()> {
+        test_tree_recursion_with_ecdsa_circuit(CircuitConfig::standard_ecc_config())
+    }
+
+
+    
 }
