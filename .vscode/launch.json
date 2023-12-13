@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Rust Test",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/release/deps/Plonky2_lib-7afd71df29ba4643",
+      "args": [
+        "ecdsa::gadgets::ecdsa::tests::test_batch_ecdsa_tree_recursion",
+        "--nocapture",
+        "--ignored"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUSTFLAGS": "-Ctarget-cpu=native"
+      }
+    }
+  ]
+}
