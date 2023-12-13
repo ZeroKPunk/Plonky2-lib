@@ -197,11 +197,12 @@ mod tests {
     use crate::ecdsa::curve::secp256k1;
     use crate::ecdsa::gadgets::biguint::WitnessBigUint;
     use crate::hash::keccak256;
-    use anyhow::Result;
+    use anyhow::{Ok, Result};
     use plonky2::field::types::{PrimeField, Sample};
     use plonky2::hash::hash_types::HashOut;
     use plonky2::hash::hashing::hash_n_to_hash_no_pad;
     use plonky2::hash::poseidon::PoseidonPermutation;
+    use plonky2::iop::target::Target;
     use plonky2::iop::witness::{PartialWitness, WitnessWrite};
     use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
     use plonky2::plonk::config::{
@@ -413,6 +414,94 @@ mod tests {
         Ok(())
     }
 
+    fn test_tree_recursion_with_batch_ecdsa_circuit(config: CircuitConfig) -> Result<()> {
+        profiling_enable();
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = <C as GenericConfig<D>>::F;
+
+        let (proofs, ecdsa_data) = generate_batch_ecdsa_circuit_data_proof_poseidon(1, config);
+
+        // let mut hashout_inputs = Vec::new();
+        // let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
+
+        let ecdsa_inner_cd = ecdsa_data.common;
+        let ecdsa_inner_vd = ecdsa_data.verifier_only;
+
+        let mut common_data = common_data_for_recursion::<F, C, D>();
+        let config = CircuitConfig::standard_recursion_config();
+
+        // build leaf circuit
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let leaf_targets = builder.tree_recursion_leaf::<C>(ecdsa_inner_cd, &mut common_data)?;
+        let data = builder.build::<C>();
+        let leaf_vd = &data.verifier_only;
+
+        let mut leaf_proofs = Vec::new();
+        // generate leaf proof
+        for i in 0..3 {
+            let mut pw = PartialWitness::new();
+            let leaf_data = TreeRecursionLeafData {
+                inner_proof: &proofs[i],
+                inner_verifier_data: &ecdsa_inner_vd,
+                verifier_data: leaf_vd,
+            };
+            set_tree_recursion_leaf_data_target(&mut pw, &leaf_targets, &leaf_data)?;
+            let leaf_proof = data.prove(pw)?;
+            check_tree_proof_verifier_data(&leaf_proof, leaf_vd, &common_data)
+                .expect("Leaf 1 public inputs do not match its verifier data");
+
+            leaf_proofs.push(leaf_proof);
+        }
+
+        for i in 0..leaf_proofs.len() {
+            println!(
+                "leaf_proofs {:?} public inputs: {:?}",
+                i, leaf_proofs[i].public_inputs
+            )
+        }
+
+        // build node
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let node_targets = builder.tree_recursion_node::<C>(&mut common_data)?;
+        let data = builder.build::<C>();
+
+        let node_vd = &data.verifier_only;
+
+        let mut pw = PartialWitness::new();
+        let node_data = TreeRecursionNodeData {
+            proof0: &leaf_proofs[0],
+            proof1: &leaf_proofs[1],
+            verifier_data0: &leaf_vd,
+            verifier_data1: &leaf_vd,
+            verifier_data: node_vd,
+        };
+        set_tree_recursion_node_data_target(&mut pw, &node_targets, &node_data)?;
+        let node_proof = data.prove(pw)?;
+        check_tree_proof_verifier_data(&node_proof, node_vd, &common_data)
+            .expect("Node public inputs do not match its verifier data");
+
+        println!("node_proof public inputs: {:?}", node_proof.public_inputs);
+
+        let mut pw = PartialWitness::new();
+        let root_data = TreeRecursionNodeData {
+            proof0: &node_proof,
+            proof1: &leaf_proofs[2],
+            verifier_data0: &node_vd,
+            verifier_data1: &leaf_vd,
+            verifier_data: node_vd,
+        };
+
+        set_tree_recursion_node_data_target(&mut pw, &node_targets, &root_data)?;
+        let root_proof = data.prove(pw)?;
+        check_tree_proof_verifier_data(&root_proof, node_vd, &common_data)
+            .expect("Node public inputs do not match its verifier data");
+
+        println!("root_proof public inputs: {:?}", root_proof.public_inputs);
+
+        Ok(())
+    }
+
     /// Generate a batch of ECDSA data
     fn gen_batch_ecdsa_data(
         batch_num: usize,
@@ -439,10 +528,25 @@ mod tests {
         (msgs, sigs, pks)
     }
 
-    fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) -> Result<()> {
-        profiling_enable();
+    fn generate_batch_ecdsa_circuit_data_proof_poseidon(
+        batch_num: usize,
+        config: CircuitConfig,
+    ) -> (
+        Vec<
+            plonky2::plonk::proof::ProofWithPublicInputs<
+                plonky2::field::goldilocks_field::GoldilocksField,
+                PoseidonGoldilocksConfig,
+                2,
+            >,
+        >,
+        plonky2::plonk::circuit_data::CircuitData<
+            plonky2::field::goldilocks_field::GoldilocksField,
+            PoseidonGoldilocksConfig,
+            2,
+        >,
+    ) {
         const D: usize = 2;
-        type C = Poseidon2GoldilocksConfig;
+        type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
         println!(
             "BATCH SIZE {} GenericConfig {}",
@@ -451,8 +555,6 @@ mod tests {
         );
 
         let mut builder = CircuitBuilder::<F, D>::new(config);
-
-        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
         let mut v_msg_target = Vec::with_capacity(batch_num);
         let mut v_msg_biguint_target = Vec::with_capacity(batch_num);
@@ -497,6 +599,56 @@ mod tests {
 
         batch_verify_message_circuit(&mut builder, v_msg_target, v_sig_target, v_pk_target);
 
+        assert_eq!(
+            v_msg_biguint_target.len(),
+            v_pk_x_biguint_target.len(),
+            "Length mismatch between v_msg_biguint_target and v_pk_x_biguint_target"
+        );
+        assert_eq!(
+            v_pk_x_biguint_target.len(),
+            v_pk_y_biguint_target.len(),
+            "Length mismatch between v_pk_x_biguint_target and v_pk_y_biguint_target"
+        );
+        assert_eq!(
+            v_pk_y_biguint_target.len(),
+            v_r_biguint_target.len(),
+            "Length mismatch between v_pk_y_biguint_target and v_r_biguint_target"
+        );
+        assert_eq!(
+            v_r_biguint_target.len(),
+            v_s_biguint_target.len(),
+            "Length mismatch between v_r_biguint_target and v_s_biguint_target"
+        );
+
+        let mut all_input_vec_targets = Vec::new();
+
+        for i in 0..batch_num {
+            let msg_vec_target = v_msg_biguint_target[i].to_vec_target();
+            let r_vec_target = v_r_biguint_target[i].to_vec_target();
+            let s_vec_target = v_s_biguint_target[i].to_vec_target();
+            let pk_x_vec_target = v_pk_x_biguint_target[i].to_vec_target();
+            let pk_y_vec_target = v_pk_y_biguint_target[i].to_vec_target();
+
+            let input_vec_target: Vec<Target> = msg_vec_target
+                .into_iter()
+                .chain(r_vec_target.into_iter())
+                .chain(s_vec_target.into_iter())
+                .chain(pk_x_vec_target.into_iter())
+                .chain(pk_y_vec_target.into_iter())
+                .collect();
+
+            all_input_vec_targets.extend(input_vec_target);
+        }
+
+        let h = builder
+            .hash_n_to_hash_no_pad::<<PoseidonGoldilocksConfig as GenericConfig<D>>::Hasher>(
+                all_input_vec_targets,
+            );
+
+        let inputs_hash = builder.add_virtual_hash();
+        builder.register_public_inputs(&inputs_hash.elements);
+        builder.connect_hashes(inputs_hash, h);
+
         dbg!(builder.num_gates());
 
         let gate_serializer = CustomGateSerializer;
@@ -506,113 +658,44 @@ mod tests {
             _phantom2: PhantomData::<F>,
         };
 
-        // let path = std::path::Path::new("data/data_bytes");
-        // let data = if path.exists() {
-        //     println!("Reading data");
-        //     let circuit_data_bytes = std::fs::read(path).unwrap();
-        //     let circuit_data = CircuitData::<F, C, D>::from_bytes(&circuit_data_bytes, &gate_serializer, &generator_serializer).unwrap();
-        //     circuit_data
-        // } else {
-        //     let data = builder.build::<C>();
-        //     let data_bytes = data
-        //     .to_bytes(&gate_serializer, &generator_serializer)
-        //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
-        //     println!("Writing data");
-        //     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        //     let mut file = File::create(path).unwrap();
-        //     file.write_all(&data_bytes).unwrap();
-        //     data
-        // };
-
         let data = builder.build::<C>();
-        let circuit_data_bytes = data
-            .to_bytes(&gate_serializer, &generator_serializer)
-            .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
-        println!("Writing data");
 
-        println!("Reading data");
-        let data_from_bytes = CircuitData::<F, C, D>::from_bytes(
-            &circuit_data_bytes,
-            &gate_serializer,
-            &generator_serializer,
-        )
-        .unwrap();
-        assert_eq!(data_from_bytes, data);
-        assert_eq!(data_from_bytes.common, data.common);
-        assert_eq!(data_from_bytes.prover_only, data.prover_only);
-        assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
+        let mut proofs = Vec::new();
 
-        let circuit_2_data_bytes = data_from_bytes
-            .to_bytes(&gate_serializer, &generator_serializer)
-            .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
+        for _ in 0..3 {
+            let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
-        let data_2_from_bytes = CircuitData::<F, C, D>::from_bytes(
-            &circuit_2_data_bytes,
-            &gate_serializer,
-            &generator_serializer,
-        )
-        .unwrap();
-        assert_eq!(data_2_from_bytes, data_from_bytes);
+            // First Proof
+            let mut pw = PartialWitness::new();
+            for i in 0..batch_num {
+                let ECDSASignature { r, s } = sig_list[i];
 
-        // hash circuit_2_data_bytes with keccak256
-        // let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
-        // let hash_common_2 = keccak256(data_from_bytes.common.to_bytes(&gate_serializer).unwrap());
-        // assert_eq!(hash_common_1, hash_common_2);
+                let msg_biguint = msg_list[i].to_canonical_biguint();
+                let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+                let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+                let r_biguint = r.to_canonical_biguint();
+                let s_biguint = s.to_canonical_biguint();
 
-        // let hash_verify_1 = keccak256(data.verifier_only.to_bytes().unwrap());
-        // let hash_verify_2 = keccak256(data_from_bytes.verifier_only.to_bytes().unwrap());
-        // assert_eq!(hash_verify_1, hash_verify_2);
+                pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+                pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+                pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+                pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+                pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+            }
 
-        // let hash_prover_1 = keccak256(data.prover_only.to_bytes(&generator_serializer, &data.common).unwrap());
-        // let hash_prover_2 = keccak256(data_from_bytes.prover_only.to_bytes(&generator_serializer, &data_from_bytes.common).unwrap());
-        // assert_eq!(hash_prover_1, hash_prover_2);
+            let proof = data.prove(pw).unwrap();
 
-        // First Proof
-        let mut pw = PartialWitness::new();
-        for i in 0..batch_num {
-            let ECDSASignature { r, s } = sig_list[i];
-
-            let msg_biguint = msg_list[i].to_canonical_biguint();
-            let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-            let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-            let r_biguint = r.to_canonical_biguint();
-            let s_biguint = s.to_canonical_biguint();
-
-            pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-            pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-            pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-            pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-            pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+            println!("proof PIS {:?}", proof.public_inputs);
+            // data.verify(proof).unwrap();
+            proofs.push(proof)
         }
 
-        let proof = data.prove(pw).unwrap();
+        (proofs, data)
+    }
 
-        println!("proof PIS {:?}", proof.public_inputs);
-        data.verify(proof).unwrap();
-
-        // Second Proof
-        // let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
-        // let mut pw = PartialWitness::new();
-        // for i in 0..batch_num {
-        //     let ECDSASignature { r, s } = sig_list[i];
-
-        //     let msg_biguint = msg_list[i].to_canonical_biguint();
-        //     let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-        //     let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-        //     let r_biguint = r.to_canonical_biguint();
-        //     let s_biguint = s.to_canonical_biguint();
-
-        //     pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-        //     pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-        //     pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-        //     pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-        //     pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
-        // }
-
-        // let proof = data.prove(pw).unwrap();
-
-        // println!("proof PIS {:?}", proof.public_inputs);
-        // data.verify(proof);
+    fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) -> Result<()> {
+        profiling_enable();
+        generate_batch_ecdsa_circuit_data_proof_poseidon(batch_num, config);
         Ok(())
     }
 
@@ -701,7 +784,11 @@ mod tests {
             pw.set_biguint_target(&pk_x_biguint_target, &pk_x_biguint);
             pw.set_biguint_target(&pk_y_biguint_target, &pk_y_biguint);
 
-            let proof = data.prove(pw).unwrap();
+            let proof: plonky2::plonk::proof::ProofWithPublicInputs<
+                plonky2::field::goldilocks_field::GoldilocksField,
+                PoseidonGoldilocksConfig,
+                2,
+            > = data.prove(pw).unwrap();
             println!("proof PIS {:?}", proof.public_inputs);
             println!("prove success!!!");
             assert!(data.verify(proof).is_ok());
@@ -731,5 +818,11 @@ mod tests {
     #[ignore]
     fn test_ecdsa_tree_recursion() -> Result<()> {
         test_tree_recursion_with_ecdsa_circuit(CircuitConfig::standard_ecc_config())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_batch_ecdsa_tree_recursion() -> Result<()> {
+        test_tree_recursion_with_batch_ecdsa_circuit(CircuitConfig::standard_ecc_config())
     }
 }
