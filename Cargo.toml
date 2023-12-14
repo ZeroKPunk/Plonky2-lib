@@ -33,6 +33,10 @@ opt-level = 3
 plonky2 = { path = "../plonky2/plonky2"}
 plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
 
+[[bin]]
+name = "perf"
+path = "src/bin/perf.rs"
+
 
 # [patch."https://github.com/orbiter/plonky2-u32.git"]
 # plonky2_u32 = { path = "../plonky2-u32"}
