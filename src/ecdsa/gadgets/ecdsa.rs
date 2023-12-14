@@ -195,7 +195,7 @@ mod tests {
     use std::io::{BufReader, Write};
 
     use crate::ecdsa::curve::secp256k1;
-    use crate::ecdsa::gadgets::biguint::WitnessBigUint;
+    use crate::ecdsa::gadgets::biguint::{BigUintTarget, WitnessBigUint};
     use crate::hash::keccak256;
     use anyhow::{Ok, Result};
     use log::Level;
@@ -521,6 +521,8 @@ mod tests {
         min_degree_bits: Option<usize>,
     ) -> Result<ProofTuple<F, C, D>>
     where
+        C: GenericConfig<D, F = F>,
+        C::Hasher: AlgebraicHasher<F>,
         InnerC::Hasher: AlgebraicHasher<F>,
     {
         let (inner_proof, inner_vd, inner_cd) = inner;
@@ -543,6 +545,22 @@ mod tests {
             }
         }
 
+        // let inputs_hash = builder.add_virtual_hash();
+        // let circuit_digest_hash = builder.add_virtual_hash();
+        // builder.register_public_inputs(&inputs_hash.elements);
+        // builder.register_public_inputs(&circuit_digest_hash.elements);
+
+        // let h = builder.hash_n_to_hash_no_pad::<C::Hasher>(pt.public_inputs.clone());
+        // builder.connect_hashes(inputs_hash, h);
+        // let h = builder.hash_n_to_hash_no_pad::<C::Hasher>(
+        //     [
+        //         inner_data.circuit_digest.elements,
+        //         verifier_data.circuit_digest.elements,
+        //     ]
+        //     .concat(),
+        // );
+        // self.connect_hashes(circuit_digest_hash, h);
+
         let data = builder.build::<C>();
 
         let mut pw = PartialWitness::new();
@@ -564,43 +582,67 @@ mod tests {
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
 
-        let proof_tuple0 = generate_batch_ecdsa_circuit_data_proof_poseidon(2, config.clone())?;
-        let proof_tuple1 = generate_batch_ecdsa_circuit_data_proof_poseidon(2, config.clone())?;
-        let proof_tuple2 = generate_batch_ecdsa_circuit_data_proof_poseidon(2, config.clone())?;
+        let batch_num = 20;
+        let (
+            data,
+            v_msg_biguint_target,
+            v_r_biguint_target,
+            v_s_biguint_target,
+            v_pk_x_biguint_target,
+            v_pk_y_biguint_target,
+        ) = build_batch_ecdsa_circuit(batch_num, config.clone());
+        let proof_tuple0 = generate_proof_from_circuit(
+            &data,
+            &v_msg_biguint_target,
+            &v_r_biguint_target,
+            &v_s_biguint_target,
+            &v_pk_x_biguint_target,
+            &v_pk_y_biguint_target,
+            batch_num,
+        );
+
+        let proof_tuple1 = generate_proof_from_circuit(
+            &data,
+            &v_msg_biguint_target,
+            &v_r_biguint_target,
+            &v_s_biguint_target,
+            &v_pk_x_biguint_target,
+            &v_pk_y_biguint_target,
+            batch_num,
+        );
+
+        let proof_tuple2 = generate_proof_from_circuit(
+            &data,
+            &v_msg_biguint_target,
+            &v_r_biguint_target,
+            &v_s_biguint_target,
+            &v_pk_x_biguint_target,
+            &v_pk_y_biguint_target,
+            batch_num,
+        );
 
         // TODO: remove this double recursion will cause leaf proving error, why?
-        let standard_config = CircuitConfig::standard_recursion_config();
 
-        // let mut recursive_proofs = Vec::new();
+        // let standard_config = CircuitConfig::standard_recursion_config();
+        // let inner1 = recursive_proof::<F, C, C, D>(&proof_tuple0, &standard_config, None)?;
+        // let inner2 = recursive_proof::<F, C, C, D>(&proof_tuple1, &standard_config, None)?;
+        // let inner3: (
+        //     ProofWithPublicInputs<GoldilocksField, PoseidonGoldilocksConfig, 2>,
+        //     VerifierOnlyCircuitData<PoseidonGoldilocksConfig, 2>,
+        //     CommonCircuitData<GoldilocksField, 2>,
+        // ) = recursive_proof::<F, C, C, D>(&proof_tuple2, &standard_config, None)?;
 
-        // let (inner_proof0, inner_vd0, inner_cd0) =
-        //     recursive_proof::<F, C, C, D>(&proof_tuple0, &standard_config, None)?;
-        // let (inner_proof1, inner_vd1, inner_cd1) =
-        //     recursive_proof::<F, C, C, D>(&proof_tuple1, &standard_config, None)?;
-        // let (inner_proof2, inner_vd2, inner_cd2) =
-        //     recursive_proof::<F, C, C, D>(&proof_tuple2, &standard_config, None)?;
-
-        let inner1 = recursive_proof::<F, C, C, D>(&proof_tuple0, &standard_config, None)?;
-        let inner2 = recursive_proof::<F, C, C, D>(&proof_tuple1, &standard_config, None)?;
-        let inner3 = recursive_proof::<F, C, C, D>(&proof_tuple2, &standard_config, None)?;
-
-        let proof_tuples = vec![inner1, inner2, inner3];
+        // let proof_tuples = vec![inner1, inner2, inner3];
 
         // println!("Num public inputs: {}", inner_cd.num_public_inputs);
 
-        // recursive_proofs.push((inner_proof, inner_vd, inner_cd));
-        // println!("Num public inputs: {}", inner_cd.num_public_inputs);
-        // let mut hashout_inputs = Vec::new();
-        // let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
-
-        // let ecdsa_inner_cd = ecdsa_data.common;
-        // let ecdsa_inner_vd = ecdsa_data.verifier_only;
-
+        let proof_tuples = vec![proof_tuple0, proof_tuple1, proof_tuple2];
         let mut common_data = common_data_for_recursion::<F, C, D>();
         let config = CircuitConfig::standard_recursion_config();
 
         let mut leaf_proofs = Vec::new();
         let mut leaf_vds = Vec::new();
+        let mut leaf_cds = Vec::new();
         for i in 0..3 {
             // build leaf circuit
             let mut builder = CircuitBuilder::<F, D>::new(config.clone());
@@ -609,9 +651,9 @@ mod tests {
             let data = builder.build::<C>();
             let leaf_vd = &data.verifier_only;
             leaf_vds.push(leaf_vd.clone());
+            leaf_cds.push(data.common.clone());
 
             // generate leaf proof
-
             let mut pw = PartialWitness::new();
             let leaf_data = TreeRecursionLeafData {
                 inner_proof: &proof_tuples[i].0,
@@ -623,6 +665,8 @@ mod tests {
             check_tree_proof_verifier_data(&leaf_proof, leaf_vd, &common_data)
                 .expect("Leaf 1 public inputs do not match its verifier data");
 
+            let _ = data.verify(leaf_proof.clone());
+            println!("leaf verify success");
             leaf_proofs.push(leaf_proof);
         }
 
@@ -633,19 +677,57 @@ mod tests {
             )
         }
 
-        // build node
+        // start to generate secondary leaf node
+        let mut secondary_leaf_proofs = Vec::new();
+        let mut secondary_leaf_vds = Vec::new();
+
+        for i in 0..3 {
+            // build secondary recuisive leaf node
+            let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+            let leaf_targets =
+                builder.tree_recursion_leaf::<C>(leaf_cds[i].clone(), &mut common_data)?;
+            let data = builder.build::<C>();
+            let secondary_leaf_vd = &data.verifier_only;
+            secondary_leaf_vds.push(secondary_leaf_vd.clone());
+
+            // generate secondary leaf proofs
+            let mut pw = PartialWitness::new();
+            let leaf_data = TreeRecursionLeafData {
+                inner_proof: &leaf_proofs[i],
+                inner_verifier_data: &leaf_vds[i],
+                verifier_data: secondary_leaf_vd,
+            };
+            set_tree_recursion_leaf_data_target(&mut pw, &leaf_targets, &leaf_data)?;
+            let leaf_proof = data.prove(pw)?;
+            check_tree_proof_verifier_data(&leaf_proof, secondary_leaf_vd, &common_data)
+                .expect("Leaf 1 public inputs do not match its verifier data");
+
+            let _ = data.verify(leaf_proof.clone());
+            println!("secondary leaf verify success");
+            secondary_leaf_proofs.push(leaf_proof);
+        }
+
+        for i in 0..secondary_leaf_proofs.len() {
+            println!(
+                "secondary_leaf_proofs {:?} public inputs: {:?}",
+                i, secondary_leaf_proofs[i].public_inputs
+            )
+        }
+
+        // build node circuit
         let mut builder = CircuitBuilder::<F, D>::new(config.clone());
         let node_targets = builder.tree_recursion_node::<C>(&mut common_data)?;
         let data = builder.build::<C>();
 
         let node_vd = &data.verifier_only;
 
+        // generate node proof
         let mut pw = PartialWitness::new();
         let node_data = TreeRecursionNodeData {
-            proof0: &leaf_proofs[0],
-            proof1: &leaf_proofs[1],
-            verifier_data0: &leaf_vds[0],
-            verifier_data1: &leaf_vds[1],
+            proof0: &secondary_leaf_proofs[0],
+            proof1: &secondary_leaf_proofs[1],
+            verifier_data0: &secondary_leaf_vds[0],
+            verifier_data1: &secondary_leaf_vds[1],
             verifier_data: node_vd,
         };
         set_tree_recursion_node_data_target(&mut pw, &node_targets, &node_data)?;
@@ -653,14 +735,17 @@ mod tests {
         check_tree_proof_verifier_data(&node_proof, node_vd, &common_data)
             .expect("Node public inputs do not match its verifier data");
 
+        let _ = data.verify(node_proof.clone());
+        println!("node verify success");
+
         println!("node_proof public inputs: {:?}", node_proof.public_inputs);
 
         let mut pw = PartialWitness::new();
         let root_data = TreeRecursionNodeData {
             proof0: &node_proof,
-            proof1: &leaf_proofs[2],
+            proof1: &secondary_leaf_proofs[2],
             verifier_data0: &node_vd,
-            verifier_data1: &leaf_vds[2],
+            verifier_data1: &secondary_leaf_vds[2],
             verifier_data: node_vd,
         };
 
@@ -669,41 +754,23 @@ mod tests {
         check_tree_proof_verifier_data(&root_proof, node_vd, &common_data)
             .expect("Node public inputs do not match its verifier data");
 
+        println!("root_proof verify success");
         println!("root_proof public inputs: {:?}", root_proof.public_inputs);
 
         Ok(())
     }
 
-    /// Generate a batch of ECDSA data
-    fn gen_batch_ecdsa_data(
-        batch_num: usize,
-    ) -> (
-        Vec<Secp256K1Scalar>,
-        Vec<ECDSASignature<Secp256K1>>,
-        Vec<ECDSAPublicKey<Secp256K1>>,
-    ) {
-        type Curve = Secp256K1;
-        let mut msgs = Vec::with_capacity(batch_num);
-        let mut sigs = Vec::with_capacity(batch_num);
-        let mut pks = Vec::with_capacity(batch_num);
-        for i in 0..batch_num {
-            let msg = Secp256K1Scalar::rand();
-            let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
-            let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
-            let sig = sign_message(msg, sk);
-            let ECDSASignature { r, s } = sig;
-            msgs.push(msg);
-            pks.push(pk);
-            sigs.push(sig);
-        }
-
-        (msgs, sigs, pks)
-    }
-
-    fn generate_batch_ecdsa_circuit_data_proof_poseidon(
+    fn build_batch_ecdsa_circuit(
         batch_num: usize,
         config: CircuitConfig,
-    ) -> Result<ProofTuple<GoldilocksField, PoseidonGoldilocksConfig, 2>> {
+    ) -> (
+        CircuitData<GoldilocksField, PoseidonGoldilocksConfig, 2>,
+        Vec<BigUintTarget>,
+        Vec<BigUintTarget>,
+        Vec<BigUintTarget>,
+        Vec<BigUintTarget>,
+        Vec<BigUintTarget>,
+    ) {
         const D: usize = 2;
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
@@ -817,12 +884,28 @@ mod tests {
             _phantom2: PhantomData::<F>,
         };
 
-        let data = builder.build::<C>();
+        let data: CircuitData<GoldilocksField, PoseidonGoldilocksConfig, 2> = builder.build::<C>();
 
-        // let mut proofs = Vec::new();
-        // let mut proof_tuples: Vec<ProofTuple<GoldilocksField, PoseidonGoldilocksConfig, 2>> =
-        //     Vec::new();
+        // data
+        (
+            data,
+            v_msg_biguint_target,
+            v_r_biguint_target,
+            v_s_biguint_target,
+            v_pk_x_biguint_target,
+            v_pk_y_biguint_target,
+        )
+    }
 
+    fn generate_proof_from_circuit(
+        data: &CircuitData<GoldilocksField, PoseidonGoldilocksConfig, 2>,
+        v_msg_biguint_target: &Vec<BigUintTarget>,
+        v_r_biguint_target: &Vec<BigUintTarget>,
+        v_s_biguint_target: &Vec<BigUintTarget>,
+        v_pk_x_biguint_target: &Vec<BigUintTarget>,
+        v_pk_y_biguint_target: &Vec<BigUintTarget>,
+        batch_num: usize,
+    ) -> ProofTuple<GoldilocksField, PoseidonGoldilocksConfig, 2> {
         let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
         // First Proof
@@ -846,19 +929,66 @@ mod tests {
         let proof = data.prove(pw).unwrap();
 
         println!("proof PIS {:?}", proof.public_inputs);
-        // data.verify(proof).unwrap();
-        let proof_tuple = (proof, data.verifier_only, data.common);
+        data.verify(proof.clone()).unwrap();
+        println!("verify success");
+        let proof_tuple = (proof, data.verifier_only.clone(), data.common.clone());
 
-        // Add the proof tuple to the vector
-        // proof_tuples.push(proof_tuple);
-        // proofs.push(proof)
+        proof_tuple
+    }
 
+    /// Generate a batch of ECDSA data
+    fn gen_batch_ecdsa_data(
+        batch_num: usize,
+    ) -> (
+        Vec<Secp256K1Scalar>,
+        Vec<ECDSASignature<Secp256K1>>,
+        Vec<ECDSAPublicKey<Secp256K1>>,
+    ) {
+        type Curve = Secp256K1;
+        let mut msgs = Vec::with_capacity(batch_num);
+        let mut sigs = Vec::with_capacity(batch_num);
+        let mut pks = Vec::with_capacity(batch_num);
+        for i in 0..batch_num {
+            let msg = Secp256K1Scalar::rand();
+            let sk = ECDSASecretKey::<Curve>(Secp256K1Scalar::rand());
+            let pk = ECDSAPublicKey((CurveScalar(sk.0) * Curve::GENERATOR_PROJECTIVE).to_affine());
+            let sig = sign_message(msg, sk);
+            let ECDSASignature { r, s } = sig;
+            msgs.push(msg);
+            pks.push(pk);
+            sigs.push(sig);
+        }
+
+        (msgs, sigs, pks)
+    }
+
+    fn generate_batch_ecdsa_circuit_data_proof_poseidon(
+        batch_num: usize,
+        config: CircuitConfig,
+    ) -> Result<ProofTuple<GoldilocksField, PoseidonGoldilocksConfig, 2>> {
+        let (
+            data,
+            v_msg_biguint_target,
+            v_r_biguint_target,
+            v_s_biguint_target,
+            v_pk_x_biguint_target,
+            v_pk_y_biguint_target,
+        ) = build_batch_ecdsa_circuit(batch_num, config.clone());
+        let proof_tuple = generate_proof_from_circuit(
+            &data,
+            &v_msg_biguint_target,
+            &v_r_biguint_target,
+            &v_s_biguint_target,
+            &v_pk_x_biguint_target,
+            &v_pk_y_biguint_target,
+            batch_num,
+        );
         Ok(proof_tuple)
     }
 
     fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) -> Result<()> {
         profiling_enable();
-        generate_batch_ecdsa_circuit_data_proof_poseidon(batch_num, config);
+        let _ = generate_batch_ecdsa_circuit_data_proof_poseidon(batch_num, config);
         Ok(())
     }
 
