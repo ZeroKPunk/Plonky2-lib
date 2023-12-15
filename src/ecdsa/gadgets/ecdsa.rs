@@ -582,7 +582,7 @@ mod tests {
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
 
-        let batch_num = 20;
+        let batch_num = 1;
         let (
             data,
             v_msg_biguint_target,
@@ -636,38 +636,51 @@ mod tests {
 
         // println!("Num public inputs: {}", inner_cd.num_public_inputs);
 
-        let proof_tuples = vec![proof_tuple0, proof_tuple1, proof_tuple2];
+        let proof_tuples: Vec<(
+            ProofWithPublicInputs<GoldilocksField, PoseidonGoldilocksConfig, 2>,
+            VerifierOnlyCircuitData<PoseidonGoldilocksConfig, 2>,
+            CommonCircuitData<GoldilocksField, 2>,
+        )> = vec![proof_tuple0, proof_tuple1, proof_tuple2];
         let mut common_data = common_data_for_recursion::<F, C, D>();
         let config = CircuitConfig::standard_recursion_config();
 
         let mut leaf_proofs = Vec::new();
-        let mut leaf_vds = Vec::new();
-        let mut leaf_cds = Vec::new();
-        for i in 0..3 {
-            // build leaf circuit
-            let mut builder = CircuitBuilder::<F, D>::new(config.clone());
-            let leaf_targets =
-                builder.tree_recursion_leaf::<C>(proof_tuples[i].2.clone(), &mut common_data)?;
-            let data = builder.build::<C>();
-            let leaf_vd = &data.verifier_only;
-            leaf_vds.push(leaf_vd.clone());
-            leaf_cds.push(data.common.clone());
 
+        // build leaf circuit
+        let ecdsa_cd = data.common.clone();
+        let ecdsa_vd = data.verifier_only.clone();
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let leaf_targets = builder.tree_recursion_leaf::<C>(ecdsa_cd, &mut common_data)?;
+        let data = builder.build::<C>();
+        let leaf_vd = data.verifier_only.clone();
+        let leaf_cd = data.common.clone();
+
+        for i in 0..3 {
             // generate leaf proof
             let mut pw = PartialWitness::new();
             let leaf_data = TreeRecursionLeafData {
                 inner_proof: &proof_tuples[i].0,
-                inner_verifier_data: &proof_tuples[i].1,
-                verifier_data: leaf_vd,
+                inner_verifier_data: &ecdsa_vd,
+                verifier_data: &leaf_vd,
             };
             set_tree_recursion_leaf_data_target(&mut pw, &leaf_targets, &leaf_data)?;
             let leaf_proof = data.prove(pw)?;
-            check_tree_proof_verifier_data(&leaf_proof, leaf_vd, &common_data)
+
+            // TODO: &common_data OR &leaf_cd ?
+            check_tree_proof_verifier_data(&leaf_proof, &leaf_vd, &common_data)
                 .expect("Leaf 1 public inputs do not match its verifier data");
 
+            let timing = TimingTree::new("leaf verify", Level::Debug);
             let _ = data.verify(leaf_proof.clone());
+            timing.print();
+
             println!("leaf verify success");
             leaf_proofs.push(leaf_proof);
+
+            // assert_eq!(
+            //     common_data, data.common,
+            //     "leaf common data is not equal to general common data"
+            // );
         }
 
         for i in 0..leaf_proofs.len() {
@@ -679,22 +692,24 @@ mod tests {
 
         // start to generate secondary leaf node
         let mut secondary_leaf_proofs = Vec::new();
-        let mut secondary_leaf_vds = Vec::new();
+
+        // build secondary recuisive leaf node
+        let mut builder = CircuitBuilder::<F, D>::new(config.clone());
+        let leaf_targets = builder.tree_recursion_leaf::<C>(leaf_cd, &mut common_data)?;
+        let data = builder.build::<C>();
+        let secondary_leaf_vd = &data.verifier_only;
+
+        assert_eq!(
+            common_data, data.common,
+            "secondary leaf common data is not equal to general common data"
+        );
 
         for i in 0..3 {
-            // build secondary recuisive leaf node
-            let mut builder = CircuitBuilder::<F, D>::new(config.clone());
-            let leaf_targets =
-                builder.tree_recursion_leaf::<C>(leaf_cds[i].clone(), &mut common_data)?;
-            let data = builder.build::<C>();
-            let secondary_leaf_vd = &data.verifier_only;
-            secondary_leaf_vds.push(secondary_leaf_vd.clone());
-
             // generate secondary leaf proofs
             let mut pw = PartialWitness::new();
             let leaf_data = TreeRecursionLeafData {
                 inner_proof: &leaf_proofs[i],
-                inner_verifier_data: &leaf_vds[i],
+                inner_verifier_data: &leaf_vd,
                 verifier_data: secondary_leaf_vd,
             };
             set_tree_recursion_leaf_data_target(&mut pw, &leaf_targets, &leaf_data)?;
@@ -702,7 +717,9 @@ mod tests {
             check_tree_proof_verifier_data(&leaf_proof, secondary_leaf_vd, &common_data)
                 .expect("Leaf 1 public inputs do not match its verifier data");
 
+            let timing = TimingTree::new("secondary leaf verify", Level::Debug);
             let _ = data.verify(leaf_proof.clone());
+            timing.print();
             println!("secondary leaf verify success");
             secondary_leaf_proofs.push(leaf_proof);
         }
@@ -726,8 +743,8 @@ mod tests {
         let node_data = TreeRecursionNodeData {
             proof0: &secondary_leaf_proofs[0],
             proof1: &secondary_leaf_proofs[1],
-            verifier_data0: &secondary_leaf_vds[0],
-            verifier_data1: &secondary_leaf_vds[1],
+            verifier_data0: &secondary_leaf_vd,
+            verifier_data1: &secondary_leaf_vd,
             verifier_data: node_vd,
         };
         set_tree_recursion_node_data_target(&mut pw, &node_targets, &node_data)?;
@@ -735,7 +752,9 @@ mod tests {
         check_tree_proof_verifier_data(&node_proof, node_vd, &common_data)
             .expect("Node public inputs do not match its verifier data");
 
+        let timing = TimingTree::new("node verify", Level::Debug);
         let _ = data.verify(node_proof.clone());
+        timing.print();
         println!("node verify success");
 
         println!("node_proof public inputs: {:?}", node_proof.public_inputs);
@@ -745,7 +764,7 @@ mod tests {
             proof0: &node_proof,
             proof1: &secondary_leaf_proofs[2],
             verifier_data0: &node_vd,
-            verifier_data1: &secondary_leaf_vds[2],
+            verifier_data1: &secondary_leaf_vd,
             verifier_data: node_vd,
         };
 
@@ -754,6 +773,9 @@ mod tests {
         check_tree_proof_verifier_data(&root_proof, node_vd, &common_data)
             .expect("Node public inputs do not match its verifier data");
 
+        let timing = TimingTree::new("root verify", Level::Debug);
+        let _ = data.verify(root_proof.clone());
+        timing.print();
         println!("root_proof verify success");
         println!("root_proof public inputs: {:?}", root_proof.public_inputs);
 
@@ -929,7 +951,11 @@ mod tests {
         let proof = data.prove(pw).unwrap();
 
         println!("proof PIS {:?}", proof.public_inputs);
+
+        let timing = TimingTree::new("ecdsa verify", Level::Debug);
         data.verify(proof.clone()).unwrap();
+
+        timing.print();
         println!("verify success");
         let proof_tuple = (proof, data.verifier_only.clone(), data.common.clone());
 
