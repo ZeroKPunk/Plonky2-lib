@@ -25,6 +25,7 @@ ethers-core = { version = "2.0.10" }
 rand = { version = "0.8.4", default-features = false, features = ["getrandom"] }
 sha2 = { version = "0.10.6" }
 sha3 = { version = "0.10.6" }
+criterion = "0.5.1"
 
 [profile.test]
 opt-level = 3
@@ -37,6 +38,13 @@ plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
 name = "perf"
 path = "src/bin/perf.rs"
 
+[[bench]]
+name = "batch_ecdsa_benchmark"
+harness = false
+# path = "benches/batch_ecdsa_benchmark.rs"
+
 
 # [patch."https://github.com/orbiter/plonky2-u32.git"]
 # plonky2_u32 = { path = "../plonky2-u32"}
+
+
