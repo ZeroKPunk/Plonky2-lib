@@ -1,8 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use plonky2::plonk::circuit_data::CircuitConfig;
-use Plonky2_lib::ecdsa::gadgets::ecdsa::test_batch_ecdsa_circuit_with_config;
+use Plonky2_lib::{ecdsa::gadgets::ecdsa::test_batch_ecdsa_circuit_with_config, profiling_enable};
 
 fn ecdsa_benchmark(c: &mut Criterion) {
+    profiling_enable();
     let mut group = c.benchmark_group("ECDSA_Benchmark_Group");
     group.sample_size(10); // 减少样本数量
     group.measurement_time(std::time::Duration::from_secs(60));
