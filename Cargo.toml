@@ -43,6 +43,10 @@ name = "batch_ecdsa_benchmark"
 harness = false
 # path = "benches/batch_ecdsa_benchmark.rs"
 
+[[bench]]
+name = "batch_ecdsa_prove_benchmark"
+harness = false
+
 
 # [patch."https://github.com/orbiter/plonky2-u32.git"]
 # plonky2_u32 = { path = "../plonky2-u32"}
