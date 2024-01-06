@@ -1,6 +1,8 @@
 use alloc::vec;
 use alloc::{string::String, vec::Vec};
 use core::marker::PhantomData;
+use plonky2::field::secp256k1_base::Secp256K1Base;
+use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
 use plonky2::plonk::circuit_data::CommonCircuitData;
 use plonky2::util::serialization::{Buffer, IoResult, Read, Write};
 use plonky2_u32::serialization::ReadU32;
@@ -42,6 +44,9 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
     ) -> BigUintTarget;
 
     fn constant_nonnative<FF: PrimeField>(&mut self, x: FF) -> NonNativeTarget<FF>;
+
+    fn constant_nonnative_scalar(&mut self, x: Secp256K1Scalar)
+        -> NonNativeTarget<Secp256K1Scalar>;
 
     fn zero_nonnative<FF: PrimeField>(&mut self) -> NonNativeTarget<FF>;
 
@@ -96,6 +101,12 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
         b: &NonNativeTarget<FF>,
     ) -> NonNativeTarget<FF>;
 
+    fn mul_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
+
     fn mul_many_nonnative<FF: PrimeField>(
         &mut self,
         to_mul: &[NonNativeTarget<FF>],
@@ -104,6 +115,13 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
     fn neg_nonnative<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) -> NonNativeTarget<FF>;
 
     fn inv_nonnative<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) -> NonNativeTarget<FF>;
+
+    fn inv_nonnative_without_result<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>);
+
+    fn inv_nonnative_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
 
     /// Returns `x % |FF|` as a `NonNativeTarget`.
     fn reduce<FF: Field>(&mut self, x: &BigUintTarget) -> NonNativeTarget<FF>;
@@ -144,6 +162,14 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
     }
 
     fn constant_nonnative<FF: PrimeField>(&mut self, x: FF) -> NonNativeTarget<FF> {
+        let x_biguint = self.constant_biguint(&x.to_canonical_biguint());
+        self.biguint_to_nonnative(&x_biguint)
+    }
+
+    fn constant_nonnative_scalar(
+        &mut self,
+        x: Secp256K1Scalar,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
         let x_biguint = self.constant_biguint(&x.to_canonical_biguint());
         self.biguint_to_nonnative(&x_biguint)
     }
@@ -341,6 +367,68 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
         prod
     }
 
+    fn mul_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let prod = self.add_virtual_nonnative_target::<Secp256K1Scalar>();
+        let modulus = self.constant_biguint(&Secp256K1Scalar::order());
+        let overflow = self.add_virtual_biguint_target(
+            a.value.num_limbs() + b.value.num_limbs() - modulus.num_limbs(),
+        );
+
+        self.add_simple_generator(NonNativeScalarMultiplicationGenerator::<F, D> {
+            a: a.clone(),
+            b: b.clone(),
+            prod: prod.clone(),
+            overflow: overflow.clone(),
+            _phantom: PhantomData,
+        });
+
+        range_check_u32_circuit(self, prod.value.limbs.clone());
+        range_check_u32_circuit(self, overflow.limbs.clone());
+
+        let prod_expected = self.mul_biguint(&a.value, &b.value);
+
+        let mod_times_overflow = self.mul_biguint(&modulus, &overflow);
+        let prod_actual = self.add_biguint(&prod.value, &mod_times_overflow);
+        self.connect_biguint(&prod_expected, &prod_actual);
+
+        prod
+    }
+
+    // fn mul_nonnative_base<FF: PrimeField>(
+    //     &mut self,
+    //     a: &NonNativeTarget<FF>,
+    //     b: &NonNativeTarget<FF>,
+    // ) -> NonNativeTarget<FF> {
+    //     let prod = self.add_virtual_nonnative_target::<FF>();
+    //     let modulus = self.constant_biguint(&FF::order());
+    //     let overflow = self.add_virtual_biguint_target(
+    //         a.value.num_limbs() + b.value.num_limbs() - modulus.num_limbs(),
+    //     );
+
+    //     self.add_simple_generator(NonNativeMultiplicationGenerator::<F, D, FF> {
+    //         a: a.clone(),
+    //         b: b.clone(),
+    //         prod: prod.clone(),
+    //         overflow: overflow.clone(),
+    //         _phantom: PhantomData,
+    //     });
+
+    //     range_check_u32_circuit(self, prod.value.limbs.clone());
+    //     range_check_u32_circuit(self, overflow.limbs.clone());
+
+    //     let prod_expected = self.mul_biguint(&a.value, &b.value);
+
+    //     let mod_times_overflow = self.mul_biguint(&modulus, &overflow);
+    //     let prod_actual = self.add_biguint(&prod.value, &mod_times_overflow);
+    //     self.connect_biguint(&prod_expected, &prod_actual);
+
+    //     prod
+    // }
+
     fn mul_many_nonnative<FF: PrimeField>(
         &mut self,
         to_mul: &[NonNativeTarget<FF>],
@@ -361,6 +449,35 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
         let zero_ff = self.biguint_to_nonnative(&zero_target);
 
         self.sub_nonnative(&zero_ff, x)
+    }
+
+    fn inv_nonnative_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let num_limbs = x.value.num_limbs();
+        let inv_biguint = self.add_virtual_biguint_target(num_limbs);
+        let div = self.add_virtual_biguint_target(num_limbs);
+
+        self.add_simple_generator(NonNativeScalarInverseGenerator::<F, D> {
+            x: x.clone(),
+            inv: inv_biguint.clone(),
+            div: div.clone(),
+            _phantom: PhantomData,
+        });
+
+        let product = self.mul_biguint(&x.value, &inv_biguint);
+
+        let modulus = self.constant_biguint(&Secp256K1Scalar::order());
+        let mod_times_div = self.mul_biguint(&modulus, &div);
+        let one = self.constant_biguint(&BigUint::one());
+        let expected_product = self.add_biguint(&mod_times_div, &one);
+        self.connect_biguint(&product, &expected_product);
+
+        NonNativeTarget::<Secp256K1Scalar> {
+            value: inv_biguint,
+            _phantom: PhantomData,
+        }
     }
 
     fn inv_nonnative<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) -> NonNativeTarget<FF> {
@@ -387,6 +504,32 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
             value: inv_biguint,
             _phantom: PhantomData,
         }
+    }
+
+    fn inv_nonnative_without_result<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) {
+        let num_limbs = x.value.num_limbs();
+        let inv_biguint = self.add_virtual_biguint_target(num_limbs);
+        let div = self.add_virtual_biguint_target(num_limbs);
+
+        self.add_simple_generator(NonNativeInverseGenerator::<F, D, FF> {
+            x: x.clone(),
+            inv: inv_biguint.clone(),
+            div: div.clone(),
+            _phantom: PhantomData,
+        });
+
+        let product = self.mul_biguint(&x.value, &inv_biguint);
+
+        let modulus = self.constant_biguint(&FF::order());
+        let mod_times_div = self.mul_biguint(&modulus, &div);
+        let one = self.constant_biguint(&BigUint::one());
+        let expected_product = self.add_biguint(&mod_times_div, &one);
+        self.connect_biguint(&product, &expected_product);
+
+        // NonNativeTarget::<FF> {
+        //     value: inv_biguint,
+        //     _phantom: PhantomData,
+        // }
     }
 
     /// Returns `x % |FF|` as a `NonNativeTarget`.
@@ -450,7 +593,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
 }
 
 #[derive(Debug, Default)]
-pub struct NonNativeAdditionGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> {
+pub struct NonNativeAdditionGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField>
+{
     a: NonNativeTarget<FF>,
     b: NonNativeTarget<FF>,
     sum: NonNativeTarget<FF>,
@@ -532,8 +676,101 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 }
 
 #[derive(Debug, Default)]
-pub struct NonNativeMultipleAddsGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField>
+pub struct NonNativeBaseAdditionGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    // FF: PrimeField,
+> {
+    a: NonNativeTarget<Secp256K1Base>,
+    b: NonNativeTarget<Secp256K1Base>,
+    sum: NonNativeTarget<Secp256K1Base>,
+    overflow: BoolTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeBaseAdditionGenerator<F, D>
 {
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+        let sum_biguint = a_biguint + b_biguint;
+        let modulus = Secp256K1Base::order();
+        let (overflow, sum_reduced) = if sum_biguint > modulus {
+            (true, sum_biguint - modulus)
+        } else {
+            (false, sum_biguint)
+        };
+
+        out_buffer.set_biguint_target(&self.sum.value, &sum_reduced);
+        out_buffer.set_bool_target(self.overflow, overflow);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let sum = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = BoolTarget::new_unsafe(src.read_target()?);
+
+        Ok(Self {
+            a,
+            b,
+            sum,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeBaseAdditionGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+
+        dst.write_biguint_target(self.sum.value.clone())?;
+        dst.write_target_bool(self.overflow)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeMultipleAddsGenerator<
+    F: RichField + Extendable<D>,
+    const D: usize,
+    FF: PrimeField,
+> {
     summands: Vec<NonNativeTarget<FF>>,
     sum: NonNativeTarget<FF>,
     overflow: U32Target,
@@ -606,6 +843,98 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 
     fn id(&self) -> String {
         String::from("NonNativeMultipleAddsGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        let summands_len = self.summands.len();
+        let summands_len_be = summands_len.to_be_bytes();
+        for byte in summands_len_be {
+            dst.write_u8(byte)?
+        }
+        for i in 0..summands_len {
+            dst.write_biguint_target(self.summands[i].value.clone())?;
+        }
+        dst.write_biguint_target(self.sum.value.clone())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeBaseMultipleAddsGenerator<F: RichField + Extendable<D>, const D: usize> {
+    summands: Vec<NonNativeTarget<Secp256K1Base>>,
+    sum: NonNativeTarget<Secp256K1Base>,
+    overflow: U32Target,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeBaseMultipleAddsGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.summands
+            .iter()
+            .flat_map(|summand| summand.value.limbs.iter().map(|limb| limb.0))
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let summands: Vec<_> = self
+            .summands
+            .iter()
+            .map(|summand| {
+                Secp256K1Base::from_noncanonical_biguint(
+                    witness.get_biguint_target(summand.value.clone()),
+                )
+            })
+            .collect();
+        let summand_biguints: Vec<_> = summands
+            .iter()
+            .map(|summand| summand.to_canonical_biguint())
+            .collect();
+
+        let sum_biguint = summand_biguints
+            .iter()
+            .fold(BigUint::zero(), |a, b| a + b.clone());
+
+        let modulus = Secp256K1Base::order();
+        let (overflow_biguint, sum_reduced) = sum_biguint.div_rem(&modulus);
+        let overflow = overflow_biguint.to_u64_digits()[0] as u32;
+
+        out_buffer.set_biguint_target(&self.sum.value, &sum_reduced);
+        out_buffer.set_u32_target(self.overflow, overflow);
+    }
+
+    fn deserialize(src: &mut Buffer<'_>, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let mut summands_len_be = [0u8; 8];
+        for i in 0..8 {
+            summands_len_be[i] = src.read_u8()?;
+        }
+        let summands_len = usize::from_be_bytes(summands_len_be);
+        let mut summands = vec![];
+        for _ in 0..summands_len {
+            summands.push(NonNativeTarget {
+                value: src.read_biguint_target()?,
+                _phantom: PhantomData,
+            });
+        }
+        let sum = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = src.read_target_u32()?;
+        Ok(Self {
+            summands,
+            sum,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeBaseMultipleAddsGenerator")
     }
 
     fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
@@ -702,7 +1031,91 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 }
 
 #[derive(Debug, Default)]
-pub struct NonNativeMultiplicationGenerator<F: RichField + Extendable<D>, const D: usize, FF: Field> {
+pub struct NonNativeBaseSubtractionGenerator<F: RichField + Extendable<D>, const D: usize> {
+    a: NonNativeTarget<Secp256K1Base>,
+    b: NonNativeTarget<Secp256K1Base>,
+    diff: NonNativeTarget<Secp256K1Base>,
+    overflow: BoolTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeBaseSubtractionGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+
+        let modulus = Secp256K1Base::order();
+        let (diff_biguint, overflow) = if a_biguint >= b_biguint {
+            (a_biguint - b_biguint, false)
+        } else {
+            (modulus + a_biguint - b_biguint, true)
+        };
+
+        out_buffer.set_biguint_target(&self.diff.value, &diff_biguint);
+        out_buffer.set_bool_target(self.overflow, overflow);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let diff = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = src.read_target_bool()?;
+        Ok(Self {
+            a,
+            b,
+            diff,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeBaseSubtractionGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+        dst.write_biguint_target(self.diff.value.clone())?;
+        dst.write_target_bool(self.overflow)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeMultiplicationGenerator<F: RichField + Extendable<D>, const D: usize, FF: Field>
+{
     a: NonNativeTarget<FF>,
     b: NonNativeTarget<FF>,
     prod: NonNativeTarget<FF>,
@@ -780,6 +1193,170 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 }
 
 #[derive(Debug, Default)]
+pub struct NonNativeScalarMultiplicationGenerator<F: RichField + Extendable<D>, const D: usize> {
+    a: NonNativeTarget<Secp256K1Scalar>,
+    b: NonNativeTarget<Secp256K1Scalar>,
+    prod: NonNativeTarget<Secp256K1Scalar>,
+    overflow: BigUintTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeScalarMultiplicationGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+
+        let prod_biguint = a_biguint * b_biguint;
+
+        let modulus = Secp256K1Scalar::order();
+        let (overflow_biguint, prod_reduced) = prod_biguint.div_rem(&modulus);
+
+        out_buffer.set_biguint_target(&self.prod.value, &prod_reduced);
+        out_buffer.set_biguint_target(&self.overflow, &overflow_biguint);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let prod = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = src.read_biguint_target()?;
+        Ok(Self {
+            a,
+            b,
+            prod,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeScalarMultiplicationGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+        dst.write_biguint_target(self.prod.value.clone())?;
+        dst.write_biguint_target(self.overflow.clone())?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeBaseMultiplicationGenerator<F: RichField + Extendable<D>, const D: usize> {
+    a: NonNativeTarget<Secp256K1Base>,
+    b: NonNativeTarget<Secp256K1Base>,
+    prod: NonNativeTarget<Secp256K1Base>,
+    overflow: BigUintTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeBaseMultiplicationGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+
+        let prod_biguint = a_biguint * b_biguint;
+
+        let modulus = Secp256K1Base::order();
+        let (overflow_biguint, prod_reduced) = prod_biguint.div_rem(&modulus);
+
+        out_buffer.set_biguint_target(&self.prod.value, &prod_reduced);
+        out_buffer.set_biguint_target(&self.overflow, &overflow_biguint);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let prod = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = src.read_biguint_target()?;
+        Ok(Self {
+            a,
+            b,
+            prod,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeBaseMultiplicationGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+        dst.write_biguint_target(self.prod.value.clone())?;
+        dst.write_biguint_target(self.overflow.clone())?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct NonNativeInverseGenerator<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> {
     x: NonNativeTarget<FF>,
     inv: BigUintTarget,
@@ -832,8 +1409,132 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 
     fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
         dst.write_biguint_target(self.x.value.clone())?;
-        dst.write_biguint_target(self.div.clone())?;
         dst.write_biguint_target(self.inv.clone())?;
+        dst.write_biguint_target(self.div.clone())?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeBaseInverseGenerator<F: RichField + Extendable<D>, const D: usize> {
+    x: NonNativeTarget<Secp256K1Base>,
+    inv: BigUintTarget,
+    div: BigUintTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeBaseInverseGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.x.value.limbs.iter().map(|&l| l.0).collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let x = Secp256K1Base::from_noncanonical_biguint(
+            witness.get_biguint_target(self.x.value.clone()),
+        );
+        let inv = x.inverse();
+
+        let x_biguint = x.to_canonical_biguint();
+        let inv_biguint = inv.to_canonical_biguint();
+        let prod = x_biguint * &inv_biguint;
+        let modulus = Secp256K1Base::order();
+        let (div, _rem) = prod.div_rem(&modulus);
+
+        out_buffer.set_biguint_target(&self.div, &div);
+        out_buffer.set_biguint_target(&self.inv, &inv_biguint);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let x = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let inv = src.read_biguint_target()?;
+        let div = src.read_biguint_target()?;
+        Ok(Self {
+            x,
+            inv,
+            div,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeBaseInverseGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.x.value.clone())?;
+        dst.write_biguint_target(self.inv.clone())?;
+        dst.write_biguint_target(self.div.clone())?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeScalarInverseGenerator<F: RichField + Extendable<D>, const D: usize> {
+    x: NonNativeTarget<Secp256K1Scalar>,
+    inv: BigUintTarget,
+    div: BigUintTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeScalarInverseGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.x.value.limbs.iter().map(|&l| l.0).collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let x = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.x.value.clone()),
+        );
+        let inv = x.inverse();
+
+        let x_biguint = x.to_canonical_biguint();
+        let inv_biguint = inv.to_canonical_biguint();
+        let prod = x_biguint * &inv_biguint;
+        let modulus = Secp256K1Scalar::order();
+        let (div, _rem) = prod.div_rem(&modulus);
+
+        out_buffer.set_biguint_target(&self.div, &div);
+        out_buffer.set_biguint_target(&self.inv, &inv_biguint);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let x = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let inv = src.read_biguint_target()?;
+        let div = src.read_biguint_target()?;
+        Ok(Self {
+            x,
+            inv,
+            div,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeScalarInverseGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.x.value.clone())?;
+        dst.write_biguint_target(self.inv.clone())?;
+        dst.write_biguint_target(self.div.clone())?;
 
         Ok(())
     }

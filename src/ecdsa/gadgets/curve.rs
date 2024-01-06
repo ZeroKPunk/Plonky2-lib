@@ -2,6 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use plonky2::field::extension::Extendable;
+use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
 use plonky2::field::types::Sample;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::target::BoolTarget;
@@ -26,6 +27,11 @@ impl<C: Curve> AffinePointTarget<C> {
 
 pub trait CircuitBuilderCurve<F: RichField + Extendable<D>, const D: usize> {
     fn constant_affine_point<C: Curve>(&mut self, point: AffinePoint<C>) -> AffinePointTarget<C>;
+
+    // fn constant_affine_point_scalar<C: Curve>(
+    //     &mut self,
+    //     point: AffinePoint<C>,
+    // ) -> AffinePointTarget<C>;
 
     fn connect_affine_point<C: Curve>(
         &mut self,
@@ -60,6 +66,12 @@ pub trait CircuitBuilderCurve<F: RichField + Extendable<D>, const D: usize> {
         p2: &AffinePointTarget<C>,
     ) -> AffinePointTarget<C>;
 
+    fn curve_add_without_result<C: Curve>(
+        &mut self,
+        p1: &AffinePointTarget<C>,
+        p2: &AffinePointTarget<C>,
+    );
+
     fn curve_conditional_add<C: Curve>(
         &mut self,
         p1: &AffinePointTarget<C>,
@@ -84,6 +96,17 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderCurve<F, D>
             y: self.constant_nonnative(point.y),
         }
     }
+
+    // fn constant_affine_point_scalar<C: Curve>(
+    //     &mut self,
+    //     point: AffinePoint<C>,
+    // ) -> AffinePointTarget<C> {
+    //     debug_assert!(!point.zero);
+    //     AffinePointTarget {
+    //         x: self.constant_nonnative_scalar(point.x),
+    //         y: self.constant_nonnative_scalar(point.y),
+    //     }
+    // }
 
     fn connect_affine_point<C: Curve>(
         &mut self,
@@ -192,6 +215,28 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderCurve<F, D>
         let y3 = self.sub_nonnative(&prod, y1);
 
         AffinePointTarget { x: x3, y: y3 }
+    }
+
+    fn curve_add_without_result<C: Curve>(
+        &mut self,
+        p1: &AffinePointTarget<C>,
+        p2: &AffinePointTarget<C>,
+    ) {
+        let AffinePointTarget { x: x1, y: y1 } = p1;
+        let AffinePointTarget { x: x2, y: y2 } = p2;
+
+        let u = self.sub_nonnative(y2, y1);
+        let v = self.sub_nonnative(x2, x1);
+        let v_inv = self.inv_nonnative(&v);
+        // let s = self.mul_nonnative(&u, &v_inv);
+        // let s_squared = self.mul_nonnative(&s, &s);
+        // let x_sum = self.add_nonnative(x2, x1);
+        // let x3 = self.sub_nonnative(&s_squared, &x_sum);
+        // let x_diff = self.sub_nonnative(x1, &x3);
+        // let prod = self.mul_nonnative(&s, &x_diff);
+        // let y3 = self.sub_nonnative(&prod, y1);
+
+        // AffinePointTarget { x: x3, y: y3 }()
     }
 
     fn curve_conditional_add<C: Curve>(

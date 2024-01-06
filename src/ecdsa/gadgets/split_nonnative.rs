@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
+use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
 
 use itertools::Itertools;
 use plonky2::field::extension::Extendable;
@@ -18,6 +19,11 @@ pub trait CircuitBuilderSplit<F: RichField + Extendable<D>, const D: usize> {
     fn split_nonnative_to_4_bit_limbs<FF: Field>(
         &mut self,
         val: &NonNativeTarget<FF>,
+    ) -> Vec<Target>;
+
+    fn split_nonnative_to_4_bit_limbs_scalar(
+        &mut self,
+        val: &NonNativeTarget<Secp256K1Scalar>,
     ) -> Vec<Target>;
 
     fn split_nonnative_to_2_bit_limbs<FF: Field>(
@@ -50,6 +56,17 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderSplit<F, D>
     fn split_nonnative_to_4_bit_limbs<FF: Field>(
         &mut self,
         val: &NonNativeTarget<FF>,
+    ) -> Vec<Target> {
+        val.value
+            .limbs
+            .iter()
+            .flat_map(|&l| self.split_u32_to_4_bit_limbs(l))
+            .collect()
+    }
+
+    fn split_nonnative_to_4_bit_limbs_scalar(
+        &mut self,
+        val: &NonNativeTarget<Secp256K1Scalar>,
     ) -> Vec<Target> {
         val.value
             .limbs

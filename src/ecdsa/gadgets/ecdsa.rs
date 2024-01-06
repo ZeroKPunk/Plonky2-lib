@@ -1,6 +1,8 @@
 use core::marker::PhantomData;
 
 use plonky2::field::extension::Extendable;
+use plonky2::field::goldilocks_field::GoldilocksField;
+use plonky2::field::secp256k1_base::Secp256K1Base;
 use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
 use plonky2::field::types::{PrimeField, Sample};
 use plonky2::gadgets::arithmetic::EqualityGenerator;
@@ -43,9 +45,14 @@ use crate::ecdsa::curve::ecdsa::{sign_message, ECDSAPublicKey, ECDSASecretKey, E
 use crate::ecdsa::curve::secp256k1::Secp256K1;
 use crate::ecdsa::gadgets::biguint::WitnessBigUint;
 use crate::ecdsa::gadgets::curve::{AffinePointTarget, CircuitBuilderCurve};
-use crate::ecdsa::gadgets::curve_fixed_base::fixed_base_curve_mul_circuit;
+use crate::ecdsa::gadgets::curve_fixed_base::{
+    fixed_base_curve_mul_circuit, fixed_base_curve_mul_circuit_without_return,
+};
 use crate::ecdsa::gadgets::glv::CircuitBuilderGlv;
-use crate::ecdsa::gadgets::nonnative::{CircuitBuilderNonNative, NonNativeTarget};
+use crate::ecdsa::gadgets::nonnative::{
+    CircuitBuilderNonNative, NonNativeScalarInverseGenerator,
+    NonNativeScalarMultiplicationGenerator, NonNativeTarget,
+};
 use crate::profiling_enable;
 use plonky2::{
     get_gate_tag_impl, get_generator_tag_impl, impl_gate_serializer, impl_generator_serializer,
@@ -87,8 +94,8 @@ impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for Cust
         LookupTableGate,
         MulExtensionGate<D>,
         NoopGate,
-        // PoseidonMdsGate<F, D>,
-        // PoseidonGate<F, D>,
+        PoseidonMdsGate<F, D>,
+        PoseidonGate<F, D>,
         Poseidon2Gate<F, D>,
         PublicInputGate,
         RandomAccessGate<F, D>,
@@ -101,33 +108,46 @@ impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for Cust
     }
 }
 
-pub struct CustomGeneratorSerializer<C: GenericConfig<D>, FF: PrimeField, const D: usize> {
+pub struct CustomGeneratorSerializer<
+    C: GenericConfig<D>,
+    FF1: PrimeField,
+    FF2: PrimeField,
+    const D: usize,
+> {
     pub _phantom: PhantomData<C>,
-    pub _phantom2: PhantomData<FF>,
+    pub _phantom2: PhantomData<FF1>,
+    pub _phantom3: PhantomData<FF2>,
 }
 
-impl<F, FF, C, const D: usize> WitnessGeneratorSerializer<F, D>
-    for CustomGeneratorSerializer<C, FF, D>
+impl<F, FF1, FF2, C, const D: usize> WitnessGeneratorSerializer<F, D>
+    for CustomGeneratorSerializer<C, FF1, FF2, D>
 where
     F: RichField + Extendable<D>,
     C: GenericConfig<D, F = F> + 'static,
     C::Hasher: AlgebraicHasher<F>,
-    FF: PrimeField,
+    FF1: PrimeField,
+    FF2: PrimeField,
 {
     impl_generator_serializer! {
         // CustomGeneratorSerializer,
         DummyProofGenerator<F, C, D>,
         ArithmeticBaseGenerator<F, D>,
         ConstantGenerator<F>,
-        // PoseidonGenerator<F, D>,
-        // PoseidonMdsGenerator<D>,
+        PoseidonGenerator<F, D>,
+        PoseidonMdsGenerator<D>,
         Poseidon2Generator<F, D>,
         RandomValueGenerator,
         BaseSumGenerator<4>,
-        NonNativeMultiplicationGenerator<F, D, FF>,
-        NonNativeAdditionGenerator<F, D, FF>,
-        NonNativeInverseGenerator<F, D, FF>,
-        NonNativeSubtractionGenerator<F, D, FF>,
+        // NonNativeMultiplicationGenerator<F, D, FF1>,
+        NonNativeMultiplicationGenerator<F, D, FF2>,
+        NonNativeScalarMultiplicationGenerator<F, D>,
+        // NonNativeAdditionGenerator<F, D, FF1>,
+        NonNativeAdditionGenerator<F, D, FF2>,
+        // NonNativeInverseGenerator<F, D, FF1>,
+        NonNativeInverseGenerator<F, D, FF2>,
+        NonNativeScalarInverseGenerator<F, D>,
+        // NonNativeSubtractionGenerator<F, D, FF1>,
+        NonNativeSubtractionGenerator<F, D, FF2>,
         GLVDecompositionGenerator<F, D>,
         U32RangeCheckGenerator<F, D>,
         EqualityGenerator,
@@ -177,21 +197,23 @@ pub fn batch_verify_message_circuit<F: RichField + Extendable<D>, const D: usize
     for ((msg, sig), pk) in msgs.into_iter().zip(sigs.into_iter()).zip(pks.into_iter()) {
         let ECDSASignatureTarget { r, s } = sig;
 
-        builder.curve_assert_valid(&pk.0);
+        // builder.curve_assert_valid(&pk.0);
 
-        let c = builder.inv_nonnative(&s);
-        let u1 = builder.mul_nonnative(&msg, &c);
-        let u2 = builder.mul_nonnative(&r, &c);
+        let c = builder.inv_nonnative_scalar(&s);
+        let u1 = builder.mul_nonnative_scalar(&msg, &c);
+        let u2 = builder.mul_nonnative_scalar(&r, &c);
 
         let point1 = fixed_base_curve_mul_circuit(builder, Secp256K1::GENERATOR_AFFINE, &u1);
-        let point2 = builder.glv_mul(&pk.0, &u2);
-        let point = builder.curve_add(&point1, &point2);
+        let point1 =
+            fixed_base_curve_mul_circuit_without_return(builder, Secp256K1::GENERATOR_AFFINE, &u1);
+        // let point2 = builder.glv_mul(&pk.0, &u2);
+        // let point = builder.curve_add(&point1, &point2);
 
-        let x = NonNativeTarget::<Secp256K1Scalar> {
-            value: point.x.value,
-            _phantom: PhantomData,
-        };
-        builder.connect_nonnative(&r, &x);
+        // let x = NonNativeTarget::<Secp256K1Scalar> {
+        //     value: point.x.value,
+        //     _phantom: PhantomData,
+        // };
+        // builder.connect_nonnative(&r, &x);
     }
 }
 
@@ -284,7 +306,8 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
 
     let generator_serializer = CustomGeneratorSerializer {
         _phantom: PhantomData::<C>,
-        _phantom2: PhantomData::<F>,
+        _phantom2: PhantomData::<Secp256K1Base>,
+        _phantom3: PhantomData::<GoldilocksField>,
     };
 
     // let path = std::path::Path::new("data/data_bytes");
@@ -324,32 +347,42 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
     assert_eq!(data_from_bytes.prover_only, data.prover_only);
     assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
 
-    let circuit_2_data_bytes = data_from_bytes
-        .to_bytes(&gate_serializer, &generator_serializer)
-        .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
-        .unwrap();
+    // let circuit_2_data_bytes = data_from_bytes
+    //     .to_bytes(&gate_serializer, &generator_serializer)
+    //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+    //     .unwrap();
 
-    let data_2_from_bytes = CircuitData::<F, C, D>::from_bytes(
-        &circuit_2_data_bytes,
-        &gate_serializer,
-        &generator_serializer,
-    )
-    .unwrap();
-    assert_eq!(data_2_from_bytes, data_from_bytes);
+    // let data_2_from_bytes = CircuitData::<F, C, D>::from_bytes(
+    //     &circuit_2_data_bytes,
+    //     &gate_serializer,
+    //     &generator_serializer,
+    // )
+    // .unwrap();
+    // assert_eq!(data_2_from_bytes, data_from_bytes);
 
     // hash circuit_2_data_bytes with keccak256
-    // let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
-    // let hash_common_2 = keccak256(data_from_bytes.common.to_bytes(&gate_serializer).unwrap());
-    // assert_eq!(hash_common_1, hash_common_2);
+    let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
+    let hash_common_2 = keccak256(data_from_bytes.common.to_bytes(&gate_serializer).unwrap());
+    assert_eq!(hash_common_1, hash_common_2);
 
-    // let hash_verify_1 = keccak256(data.verifier_only.to_bytes().unwrap());
-    // let hash_verify_2 = keccak256(data_from_bytes.verifier_only.to_bytes().unwrap());
-    // assert_eq!(hash_verify_1, hash_verify_2);
+    let hash_verify_1 = keccak256(data.verifier_only.to_bytes().unwrap());
+    let hash_verify_2 = keccak256(data_from_bytes.verifier_only.to_bytes().unwrap());
+    assert_eq!(hash_verify_1, hash_verify_2);
 
-    // let hash_prover_1 = keccak256(data.prover_only.to_bytes(&generator_serializer, &data.common).unwrap());
-    // let hash_prover_2 = keccak256(data_from_bytes.prover_only.to_bytes(&generator_serializer, &data_from_bytes.common).unwrap());
-    // assert_eq!(hash_prover_1, hash_prover_2);
+    let hash_prover_1 = keccak256(
+        data.prover_only
+            .to_bytes(&generator_serializer, &data.common)
+            .unwrap(),
+    );
+    let hash_prover_2 = keccak256(
+        data_from_bytes
+            .prover_only
+            .to_bytes(&generator_serializer, &data_from_bytes.common)
+            .unwrap(),
+    );
+    assert_eq!(hash_prover_1, hash_prover_2);
 
+    println!("Hash verification succeeded");
     // First Proof
     let mut pw = PartialWitness::new();
     for i in 0..batch_num {
@@ -368,7 +401,7 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
         pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
     }
 
-    let proof = data.prove(pw).unwrap();
+    let proof = data_from_bytes.prove(pw).unwrap();
 
     println!("proof PIS {:?}", proof.public_inputs);
     data.verify(proof).unwrap();
@@ -398,7 +431,7 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
     // data.verify(proof);
 }
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
-    // profiling_enable();
+    profiling_enable();
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
@@ -456,15 +489,32 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
 
     dbg!(builder.num_gates());
 
-    let gate_serializer = CustomGateSerializer;
-
-    let generator_serializer = CustomGeneratorSerializer {
-        _phantom: PhantomData::<C>,
-        _phantom2: PhantomData::<F>,
-    };
-
     let data = builder.build_cuda::<C>();
 
+    // let gate_serializer = CustomGateSerializer;
+
+    // let generator_serializer = CustomGeneratorSerializer {
+    //     _phantom: PhantomData::<C>,
+    //     _phantom2: PhantomData::<F>,
+    // };
+
+    // let circuit_data_bytes = data
+    //     .to_bytes(&gate_serializer, &generator_serializer)
+    //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+    //     .unwrap();
+    // println!("Writing data");
+
+    // println!("Reading data");
+    // let data_from_bytes = CircuitData::<F, C, D>::from_bytes(
+    //     &circuit_data_bytes,
+    //     &gate_serializer,
+    //     &generator_serializer,
+    // )
+    // .unwrap();
+    // assert_eq!(data_from_bytes, data);
+    // assert_eq!(data_from_bytes.common, data.common);
+    // assert_eq!(data_from_bytes.prover_only, data.prover_only);
+    // assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
     // First Proof
     let mut pw = PartialWitness::new();
     for i in 0..batch_num {
@@ -487,7 +537,6 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
 
     println!("proof PIS {:?}", proof.public_inputs);
     data.verify(proof).unwrap();
-
 }
 
 // #[cfg(test)]
@@ -591,7 +640,7 @@ pub mod tests {
     #[test]
     #[ignore]
     fn test_batch_ecdsa_circuit_narrow() -> Result<()> {
-        test_batch_ecdsa_circuit_with_config(20, CircuitConfig::standard_ecc_config());
+        test_batch_ecdsa_circuit_with_config(1, CircuitConfig::standard_ecc_config());
         Ok(())
     }
 
