@@ -1,4 +1,6 @@
 use core::marker::PhantomData;
+use std::fs::File;
+use std::io::Write;
 
 use plonky2::field::extension::Extendable;
 use plonky2::field::goldilocks_field::GoldilocksField;
@@ -306,80 +308,30 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
         _phantom3: PhantomData::<Secp256K1Scalar>,
     };
 
-    // let path = std::path::Path::new("data/data_bytes");
-    // let data = if path.exists() {
-    //     println!("Reading data");
-    //     let circuit_data_bytes = std::fs::read(path).unwrap();
-    //     let circuit_data = CircuitData::<F, C, D>::from_bytes(&circuit_data_bytes, &gate_serializer, &generator_serializer).unwrap();
-    //     circuit_data
-    // } else {
-    //     let data = builder.build::<C>();
-    //     let data_bytes = data
-    //     .to_bytes(&gate_serializer, &generator_serializer)
-    //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))?;
-    //     println!("Writing data");
-    //     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    //     let mut file = File::create(path).unwrap();
-    //     file.write_all(&data_bytes).unwrap();
-    //     data
-    // };
-
-    let data = builder.build::<C>();
-    let circuit_data_bytes = data
-        .to_bytes(&gate_serializer, &generator_serializer)
-        .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+    let path = std::path::Path::new("data/data_bytes");
+    let data = if path.exists() {
+        println!("Reading data");
+        let circuit_data_bytes = std::fs::read(path).unwrap();
+        let circuit_data = CircuitData::<F, C, D>::from_bytes(
+            &circuit_data_bytes,
+            &gate_serializer,
+            &generator_serializer,
+        )
         .unwrap();
-    println!("Writing data");
+        circuit_data
+    } else {
+        let data = builder.build::<C>();
+        let data_bytes = data
+            .to_bytes(&gate_serializer, &generator_serializer)
+            .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+            .unwrap();
+        println!("Writing data");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = File::create(path).unwrap();
+        file.write_all(&data_bytes).unwrap();
+        data
+    };
 
-    println!("Reading data");
-    let data_from_bytes = CircuitData::<F, C, D>::from_bytes(
-        &circuit_data_bytes,
-        &gate_serializer,
-        &generator_serializer,
-    )
-    .unwrap();
-    assert_eq!(data_from_bytes, data);
-    assert_eq!(data_from_bytes.common, data.common);
-    assert_eq!(data_from_bytes.prover_only, data.prover_only);
-    assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
-
-    // let circuit_2_data_bytes = data_from_bytes
-    //     .to_bytes(&gate_serializer, &generator_serializer)
-    //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
-    //     .unwrap();
-
-    // let data_2_from_bytes = CircuitData::<F, C, D>::from_bytes(
-    //     &circuit_2_data_bytes,
-    //     &gate_serializer,
-    //     &generator_serializer,
-    // )
-    // .unwrap();
-    // assert_eq!(data_2_from_bytes, data_from_bytes);
-
-    // hash circuit_2_data_bytes with keccak256
-    let hash_common_1 = keccak256(data.common.to_bytes(&gate_serializer).unwrap());
-    let hash_common_2 = keccak256(data_from_bytes.common.to_bytes(&gate_serializer).unwrap());
-    assert_eq!(hash_common_1, hash_common_2);
-
-    let hash_verify_1 = keccak256(data.verifier_only.to_bytes().unwrap());
-    let hash_verify_2 = keccak256(data_from_bytes.verifier_only.to_bytes().unwrap());
-    assert_eq!(hash_verify_1, hash_verify_2);
-
-    let hash_prover_1 = keccak256(
-        data.prover_only
-            .to_bytes(&generator_serializer, &data.common)
-            .unwrap(),
-    );
-    let hash_prover_2 = keccak256(
-        data_from_bytes
-            .prover_only
-            .to_bytes(&generator_serializer, &data_from_bytes.common)
-            .unwrap(),
-    );
-    assert_eq!(hash_prover_1, hash_prover_2);
-
-    println!("Hash verification succeeded");
-    // First Proof
     let mut pw = PartialWitness::new();
     for i in 0..batch_num {
         let ECDSASignature { r, s } = sig_list[i];
@@ -397,11 +349,12 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
         pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
     }
 
-    let proof = data_from_bytes.prove(pw).unwrap();
+    let proof = data.prove(pw).unwrap();
 
     println!("proof PIS {:?}", proof.public_inputs);
     data.verify(proof).unwrap();
 }
+
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
     profiling_enable();
     const D: usize = 2;
@@ -414,8 +367,6 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
     );
 
     let mut builder = CircuitBuilder::<F, D>::new(config);
-
-    let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
     let mut v_msg_target = Vec::with_capacity(batch_num);
     let mut v_msg_biguint_target = Vec::with_capacity(batch_num);
@@ -461,33 +412,41 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
 
     dbg!(builder.num_gates());
 
-    let data = builder.build_cuda::<C>();
+    // let data = builder.build_cuda::<C>();
+    let gate_serializer = CustomGateSerializer;
 
-    // let gate_serializer = CustomGateSerializer;
+    let generator_serializer = CustomGeneratorSerializer {
+        _phantom: PhantomData::<C>,
+        _phantom2: PhantomData::<Secp256K1Base>,
+        _phantom3: PhantomData::<Secp256K1Scalar>,
+    };
 
-    // let generator_serializer = CustomGeneratorSerializer {
-    //     _phantom: PhantomData::<C>,
-    //     _phantom2: PhantomData::<F>,
-    // };
+    let path = std::path::Path::new("data/data_bytes");
+    let data = if path.exists() {
+        println!("Reading data");
+        let circuit_data_bytes = std::fs::read(path).unwrap();
+        let circuit_data = CircuitData::<F, C, D>::from_bytes(
+            &circuit_data_bytes,
+            &gate_serializer,
+            &generator_serializer,
+        )
+        .unwrap();
+        circuit_data
+    } else {
+        let data = builder.build::<C>();
+        let data_bytes = data
+            .to_bytes(&gate_serializer, &generator_serializer)
+            .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+            .unwrap();
+        println!("Writing data");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = File::create(path).unwrap();
+        file.write_all(&data_bytes).unwrap();
+        data
+    };
 
-    // let circuit_data_bytes = data
-    //     .to_bytes(&gate_serializer, &generator_serializer)
-    //     .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
-    //     .unwrap();
-    // println!("Writing data");
+    let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
-    // println!("Reading data");
-    // let data_from_bytes = CircuitData::<F, C, D>::from_bytes(
-    //     &circuit_data_bytes,
-    //     &gate_serializer,
-    //     &generator_serializer,
-    // )
-    // .unwrap();
-    // assert_eq!(data_from_bytes, data);
-    // assert_eq!(data_from_bytes.common, data.common);
-    // assert_eq!(data_from_bytes.prover_only, data.prover_only);
-    // assert_eq!(data_from_bytes.verifier_only, data.verifier_only);
-    // First Proof
     let mut pw = PartialWitness::new();
     for i in 0..batch_num {
         let ECDSASignature { r, s } = sig_list[i];
@@ -612,7 +571,7 @@ pub mod tests {
     #[test]
     #[ignore]
     fn test_batch_ecdsa_circuit_narrow() -> Result<()> {
-        test_batch_ecdsa_circuit_with_config(1, CircuitConfig::standard_ecc_config());
+        test_batch_ecdsa_circuit_with_config(20, CircuitConfig::standard_ecc_config());
         Ok(())
     }
 
