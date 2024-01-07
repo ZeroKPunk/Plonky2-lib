@@ -34,11 +34,33 @@ pub trait CircuitBuilderGlv<F: RichField + Extendable<D>, const D: usize> {
         BoolTarget,
     );
 
+    fn decompose_secp256k1_scalar_scalar(
+        &mut self,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> (
+        NonNativeTarget<Secp256K1Scalar>,
+        NonNativeTarget<Secp256K1Scalar>,
+        BoolTarget,
+        BoolTarget,
+    );
+
     fn glv_mul(
         &mut self,
         p: &AffinePointTarget<Secp256K1>,
         k: &NonNativeTarget<Secp256K1Scalar>,
     ) -> AffinePointTarget<Secp256K1>;
+
+    fn glv_mul_scalar(
+        &mut self,
+        p: &AffinePointTarget<Secp256K1>,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> AffinePointTarget<Secp256K1>;
+
+    fn glv_mul_without_return(
+        &mut self,
+        p: &AffinePointTarget<Secp256K1>,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    );
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderGlv<F, D>
@@ -82,6 +104,40 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderGlv<F, D>
         (k1, k2, k1_neg, k2_neg)
     }
 
+    fn decompose_secp256k1_scalar_scalar(
+        &mut self,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> (
+        NonNativeTarget<Secp256K1Scalar>,
+        NonNativeTarget<Secp256K1Scalar>,
+        BoolTarget,
+        BoolTarget,
+    ) {
+        let k1 = self.add_virtual_nonnative_target_sized::<Secp256K1Scalar>(4);
+        let k2 = self.add_virtual_nonnative_target_sized::<Secp256K1Scalar>(4);
+        let k1_neg = self.add_virtual_bool_target_unsafe();
+        let k2_neg = self.add_virtual_bool_target_unsafe();
+
+        self.add_simple_generator(GLVDecompositionGenerator::<F, D> {
+            k: k.clone(),
+            k1: k1.clone(),
+            k2: k2.clone(),
+            k1_neg,
+            k2_neg,
+            _phantom: PhantomData,
+        });
+
+        // Check that `k1_raw + GLV_S * k2_raw == k`.
+        let k1_raw = self.nonnative_conditional_neg_scalar(&k1, k1_neg);
+        let k2_raw = self.nonnative_conditional_neg_scalar(&k2, k2_neg);
+        let s = self.constant_nonnative(GLV_S);
+        let mut should_be_k = self.mul_nonnative_scalar(&s, &k2_raw);
+        should_be_k = self.add_nonnative_scalar(&should_be_k, &k1_raw);
+        self.connect_nonnative(&should_be_k, k);
+
+        (k1, k2, k1_neg, k2_neg)
+    }
+
     fn glv_mul(
         &mut self,
         p: &AffinePointTarget<Secp256K1>,
@@ -99,6 +155,44 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderGlv<F, D>
         let p_neg = self.curve_conditional_neg(p, k1_neg);
         let sp_neg = self.curve_conditional_neg(&sp, k2_neg);
         curve_msm_circuit(self, &p_neg, &sp_neg, &k1, &k2)
+    }
+
+    fn glv_mul_scalar(
+        &mut self,
+        p: &AffinePointTarget<Secp256K1>,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> AffinePointTarget<Secp256K1> {
+        let (k1, k2, k1_neg, k2_neg) = self.decompose_secp256k1_scalar_scalar(k);
+
+        let beta = self.secp256k1_glv_beta();
+        let beta_px = self.mul_nonnative(&beta, &p.x);
+        let sp = AffinePointTarget::<Secp256K1> {
+            x: beta_px,
+            y: p.y.clone(),
+        };
+
+        let p_neg = self.curve_conditional_neg(p, k1_neg);
+        let sp_neg = self.curve_conditional_neg(&sp, k2_neg);
+        curve_msm_circuit(self, &p_neg, &sp_neg, &k1, &k2)
+    }
+
+    fn glv_mul_without_return(
+        &mut self,
+        p: &AffinePointTarget<Secp256K1>,
+        k: &NonNativeTarget<Secp256K1Scalar>,
+    ) {
+        let (k1, k2, k1_neg, k2_neg) = self.decompose_secp256k1_scalar_scalar(k);
+
+        let beta = self.secp256k1_glv_beta();
+        let beta_px = self.mul_nonnative(&beta, &p.x);
+        let sp = AffinePointTarget::<Secp256K1> {
+            x: beta_px,
+            y: p.y.clone(),
+        };
+
+        let p_neg = self.curve_conditional_neg(p, k1_neg);
+        let sp_neg = self.curve_conditional_neg(&sp, k2_neg);
+        curve_msm_circuit(self, &p_neg, &sp_neg, &k1, &k2);
     }
 }
 

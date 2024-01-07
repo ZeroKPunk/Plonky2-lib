@@ -50,8 +50,8 @@ use crate::ecdsa::gadgets::curve_fixed_base::{
 };
 use crate::ecdsa::gadgets::glv::CircuitBuilderGlv;
 use crate::ecdsa::gadgets::nonnative::{
-    CircuitBuilderNonNative, NonNativeScalarInverseGenerator,
-    NonNativeScalarMultiplicationGenerator, NonNativeTarget,
+    CircuitBuilderNonNative, NonNativeScalarAdditionGenerator, NonNativeScalarInverseGenerator,
+    NonNativeScalarMultiplicationGenerator, NonNativeScalarSubtractionGenerator, NonNativeTarget,
 };
 use crate::profiling_enable;
 use plonky2::{
@@ -138,23 +138,21 @@ where
         Poseidon2Generator<F, D>,
         RandomValueGenerator,
         BaseSumGenerator<4>,
-        // NonNativeMultiplicationGenerator<F, D, FF1>,
-        NonNativeMultiplicationGenerator<F, D, FF2>,
+        NonNativeMultiplicationGenerator<F, D, FF1>,
         NonNativeScalarMultiplicationGenerator<F, D>,
-        // NonNativeAdditionGenerator<F, D, FF1>,
-        NonNativeAdditionGenerator<F, D, FF2>,
-        // NonNativeInverseGenerator<F, D, FF1>,
-        NonNativeInverseGenerator<F, D, FF2>,
+        NonNativeAdditionGenerator<F, D, FF1>,
+        NonNativeScalarAdditionGenerator<F, D>,
+        NonNativeInverseGenerator<F, D, FF1>,
         NonNativeScalarInverseGenerator<F, D>,
-        // NonNativeSubtractionGenerator<F, D, FF1>,
-        NonNativeSubtractionGenerator<F, D, FF2>,
+        NonNativeSubtractionGenerator<F, D, FF1>,
+        NonNativeScalarSubtractionGenerator<F, D>,
         GLVDecompositionGenerator<F, D>,
         U32RangeCheckGenerator<F, D>,
         EqualityGenerator,
         U32ArithmeticGenerator<F, D>,
         U32AddManyGenerator<F, D>,
         ComparisonGenerator<F,D>,
-        BaseSplitGenerator<2>,
+        BaseSplitGenerator<4>,
         RandomAccessGenerator<F, D>,
         U32SubtractionGenerator<F, D>
     }
@@ -197,23 +195,21 @@ pub fn batch_verify_message_circuit<F: RichField + Extendable<D>, const D: usize
     for ((msg, sig), pk) in msgs.into_iter().zip(sigs.into_iter()).zip(pks.into_iter()) {
         let ECDSASignatureTarget { r, s } = sig;
 
-        // builder.curve_assert_valid(&pk.0);
+        builder.curve_assert_valid(&pk.0);
 
         let c = builder.inv_nonnative_scalar(&s);
         let u1 = builder.mul_nonnative_scalar(&msg, &c);
         let u2 = builder.mul_nonnative_scalar(&r, &c);
 
         let point1 = fixed_base_curve_mul_circuit(builder, Secp256K1::GENERATOR_AFFINE, &u1);
-        let point1 =
-            fixed_base_curve_mul_circuit_without_return(builder, Secp256K1::GENERATOR_AFFINE, &u1);
-        // let point2 = builder.glv_mul(&pk.0, &u2);
-        // let point = builder.curve_add(&point1, &point2);
+        let point2 = builder.glv_mul_scalar(&pk.0, &u2);
+        let point = builder.curve_add(&point1, &point2);
 
-        // let x = NonNativeTarget::<Secp256K1Scalar> {
-        //     value: point.x.value,
-        //     _phantom: PhantomData,
-        // };
-        // builder.connect_nonnative(&r, &x);
+        let x = NonNativeTarget::<Secp256K1Scalar> {
+            value: point.x.value,
+            _phantom: PhantomData,
+        };
+        builder.connect_nonnative(&r, &x);
     }
 }
 
@@ -307,7 +303,7 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
     let generator_serializer = CustomGeneratorSerializer {
         _phantom: PhantomData::<C>,
         _phantom2: PhantomData::<Secp256K1Base>,
-        _phantom3: PhantomData::<GoldilocksField>,
+        _phantom3: PhantomData::<Secp256K1Scalar>,
     };
 
     // let path = std::path::Path::new("data/data_bytes");
@@ -405,30 +401,6 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
 
     println!("proof PIS {:?}", proof.public_inputs);
     data.verify(proof).unwrap();
-
-    // Second Proof
-    // let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
-    // let mut pw = PartialWitness::new();
-    // for i in 0..batch_num {
-    //     let ECDSASignature { r, s } = sig_list[i];
-
-    //     let msg_biguint = msg_list[i].to_canonical_biguint();
-    //     let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-    //     let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-    //     let r_biguint = r.to_canonical_biguint();
-    //     let s_biguint = s.to_canonical_biguint();
-
-    //     pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-    //     pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-    //     pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-    //     pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-    //     pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
-    // }
-
-    // let proof = data.prove(pw).unwrap();
-
-    // println!("proof PIS {:?}", proof.public_inputs);
-    // data.verify(proof);
 }
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
     profiling_enable();

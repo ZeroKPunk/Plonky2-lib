@@ -38,6 +38,11 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
 
     fn biguint_to_nonnative<FF: Field>(&mut self, x: &BigUintTarget) -> NonNativeTarget<FF>;
 
+    fn biguint_to_nonnative_scalar(
+        &mut self,
+        x: &BigUintTarget,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
+
     fn nonnative_to_canonical_biguint<FF: Field>(
         &mut self,
         x: &NonNativeTarget<FF>,
@@ -70,6 +75,12 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
         b: &NonNativeTarget<FF>,
     ) -> NonNativeTarget<FF>;
 
+    fn add_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
+
     fn mul_nonnative_by_bool<FF: Field>(
         &mut self,
         a: &NonNativeTarget<FF>,
@@ -95,6 +106,12 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
         b: &NonNativeTarget<FF>,
     ) -> NonNativeTarget<FF>;
 
+    fn sub_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
+
     fn mul_nonnative<FF: PrimeField>(
         &mut self,
         a: &NonNativeTarget<FF>,
@@ -113,6 +130,11 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
     ) -> NonNativeTarget<FF>;
 
     fn neg_nonnative<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) -> NonNativeTarget<FF>;
+
+    fn neg_nonnative_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
 
     fn inv_nonnative<FF: PrimeField>(&mut self, x: &NonNativeTarget<FF>) -> NonNativeTarget<FF>;
 
@@ -138,6 +160,18 @@ pub trait CircuitBuilderNonNative<F: RichField + Extendable<D>, const D: usize> 
         x: &NonNativeTarget<FF>,
         b: BoolTarget,
     ) -> NonNativeTarget<FF>;
+
+    fn nonnative_conditional_neg_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+        b: BoolTarget,
+    ) -> NonNativeTarget<Secp256K1Scalar>;
+
+    fn nonnative_conditional_neg_scalar_without_return(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+        b: BoolTarget,
+    );
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
@@ -148,6 +182,16 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
     }
 
     fn biguint_to_nonnative<FF: Field>(&mut self, x: &BigUintTarget) -> NonNativeTarget<FF> {
+        NonNativeTarget {
+            value: x.clone(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn biguint_to_nonnative_scalar(
+        &mut self,
+        x: &BigUintTarget,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
         NonNativeTarget {
             value: x.clone(),
             _phantom: PhantomData,
@@ -228,6 +272,38 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
         let sum_expected = self.add_biguint(&a.value, &b.value);
 
         let modulus = self.constant_biguint(&FF::order());
+        let mod_times_overflow = self.mul_biguint_by_bool(&modulus, overflow);
+        let sum_actual = self.add_biguint(&sum.value, &mod_times_overflow);
+        self.connect_biguint(&sum_expected, &sum_actual);
+
+        // Range-check result.
+        // TODO: can potentially leave unreduced until necessary (e.g. when connecting values).
+        let cmp = self.cmp_biguint(&sum.value, &modulus);
+        let one = self.one();
+        self.connect(cmp.target, one);
+
+        sum
+    }
+
+    fn add_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let sum = self.add_virtual_nonnative_target::<Secp256K1Scalar>();
+        let overflow = self.add_virtual_bool_target_unsafe();
+
+        self.add_simple_generator(NonNativeScalarAdditionGenerator::<F, D> {
+            a: a.clone(),
+            b: b.clone(),
+            sum: sum.clone(),
+            overflow,
+            _phantom: PhantomData,
+        });
+
+        let sum_expected = self.add_biguint(&a.value, &b.value);
+
+        let modulus = self.constant_biguint(&Secp256K1Scalar::order());
         let mod_times_overflow = self.mul_biguint_by_bool(&modulus, overflow);
         let sum_actual = self.add_biguint(&sum.value, &mod_times_overflow);
         self.connect_biguint(&sum_expected, &sum_actual);
@@ -329,6 +405,34 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
 
         let diff_plus_b = self.add_biguint(&diff.value, &b.value);
         let modulus = self.constant_biguint(&FF::order());
+        let mod_times_overflow = self.mul_biguint_by_bool(&modulus, overflow);
+        let diff_plus_b_reduced = self.sub_biguint(&diff_plus_b, &mod_times_overflow);
+        self.connect_biguint(&a.value, &diff_plus_b_reduced);
+
+        diff
+    }
+
+    fn sub_nonnative_scalar(
+        &mut self,
+        a: &NonNativeTarget<Secp256K1Scalar>,
+        b: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let diff = self.add_virtual_nonnative_target::<Secp256K1Scalar>();
+        let overflow = self.add_virtual_bool_target_unsafe();
+
+        self.add_simple_generator(NonNativeScalarSubtractionGenerator::<F, D> {
+            a: a.clone(),
+            b: b.clone(),
+            diff: diff.clone(),
+            overflow,
+            _phantom: PhantomData,
+        });
+
+        range_check_u32_circuit(self, diff.value.limbs.clone());
+        self.assert_bool(overflow);
+
+        let diff_plus_b = self.add_biguint(&diff.value, &b.value);
+        let modulus = self.constant_biguint(&Secp256K1Scalar::order());
         let mod_times_overflow = self.mul_biguint_by_bool(&modulus, overflow);
         let diff_plus_b_reduced = self.sub_biguint(&diff_plus_b, &mod_times_overflow);
         self.connect_biguint(&a.value, &diff_plus_b_reduced);
@@ -449,6 +553,16 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
         let zero_ff = self.biguint_to_nonnative(&zero_target);
 
         self.sub_nonnative(&zero_ff, x)
+    }
+
+    fn neg_nonnative_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let zero_target = self.constant_biguint(&BigUint::zero());
+        let zero_ff = self.biguint_to_nonnative_scalar(&zero_target);
+
+        self.sub_nonnative_scalar(&zero_ff, x)
     }
 
     fn inv_nonnative_scalar(
@@ -590,6 +704,32 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderNonNative<F, D>
 
         self.add_nonnative(&x_if_true, &x_if_false)
     }
+
+    fn nonnative_conditional_neg_scalar(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+        b: BoolTarget,
+    ) -> NonNativeTarget<Secp256K1Scalar> {
+        let not_b = self.not(b);
+        let neg = self.neg_nonnative_scalar(x);
+        let x_if_true = self.mul_nonnative_by_bool(&neg, b);
+        let x_if_false = self.mul_nonnative_by_bool(x, not_b);
+
+        self.add_nonnative_scalar(&x_if_true, &x_if_false)
+    }
+
+    fn nonnative_conditional_neg_scalar_without_return(
+        &mut self,
+        x: &NonNativeTarget<Secp256K1Scalar>,
+        b: BoolTarget,
+    ) {
+        let not_b = self.not(b);
+        let neg = self.neg_nonnative_scalar(x);
+        let x_if_true = self.mul_nonnative_by_bool(&neg, b);
+        let x_if_false = self.mul_nonnative_by_bool(x, not_b);
+
+        self.add_nonnative_scalar(&x_if_true, &x_if_false);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -662,6 +802,92 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
 
     fn id(&self) -> String {
         String::from("NonNativeAdditionGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+
+        dst.write_biguint_target(self.sum.value.clone())?;
+        dst.write_target_bool(self.overflow)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct NonNativeScalarAdditionGenerator<F: RichField + Extendable<D>, const D: usize> {
+    a: NonNativeTarget<Secp256K1Scalar>,
+    b: NonNativeTarget<Secp256K1Scalar>,
+    sum: NonNativeTarget<Secp256K1Scalar>,
+    overflow: BoolTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeScalarAdditionGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+        let sum_biguint = a_biguint + b_biguint;
+        let modulus = Secp256K1Scalar::order();
+        let (overflow, sum_reduced) = if sum_biguint > modulus {
+            (true, sum_biguint - modulus)
+        } else {
+            (false, sum_biguint)
+        };
+
+        out_buffer.set_biguint_target(&self.sum.value, &sum_reduced);
+        out_buffer.set_bool_target(self.overflow, overflow);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let sum = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = BoolTarget::new_unsafe(src.read_target()?);
+
+        Ok(Self {
+            a,
+            b,
+            sum,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeScalarAdditionGenerator")
     }
 
     fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
@@ -1030,6 +1256,88 @@ impl<F: RichField + Extendable<D>, const D: usize, FF: PrimeField> SimpleGenerat
     }
 }
 
+#[derive(Debug, Default)]
+pub struct NonNativeScalarSubtractionGenerator<F: RichField + Extendable<D>, const D: usize> {
+    a: NonNativeTarget<Secp256K1Scalar>,
+    b: NonNativeTarget<Secp256K1Scalar>,
+    diff: NonNativeTarget<Secp256K1Scalar>,
+    overflow: BoolTarget,
+    _phantom: PhantomData<F>,
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
+    for NonNativeScalarSubtractionGenerator<F, D>
+{
+    fn dependencies(&self) -> Vec<Target> {
+        self.a
+            .value
+            .limbs
+            .iter()
+            .cloned()
+            .chain(self.b.value.limbs.clone())
+            .map(|l| l.0)
+            .collect()
+    }
+
+    fn run_once(&self, witness: &PartitionWitness<F>, out_buffer: &mut GeneratedValues<F>) {
+        let a = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.a.value.clone()),
+        );
+        let b = Secp256K1Scalar::from_noncanonical_biguint(
+            witness.get_biguint_target(self.b.value.clone()),
+        );
+        let a_biguint = a.to_canonical_biguint();
+        let b_biguint = b.to_canonical_biguint();
+
+        let modulus = Secp256K1Scalar::order();
+        let (diff_biguint, overflow) = if a_biguint >= b_biguint {
+            (a_biguint - b_biguint, false)
+        } else {
+            (modulus + a_biguint - b_biguint, true)
+        };
+
+        out_buffer.set_biguint_target(&self.diff.value, &diff_biguint);
+        out_buffer.set_bool_target(self.overflow, overflow);
+    }
+
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
+    where
+        Self: Sized,
+    {
+        let a = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let b = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let diff = NonNativeTarget {
+            value: src.read_biguint_target()?,
+            _phantom: PhantomData,
+        };
+        let overflow = src.read_target_bool()?;
+        Ok(Self {
+            a,
+            b,
+            diff,
+            overflow,
+            _phantom: PhantomData,
+        })
+    }
+
+    fn id(&self) -> String {
+        String::from("NonNativeScalarSubtractionGenerator")
+    }
+
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
+        dst.write_biguint_target(self.a.value.clone())?;
+        dst.write_biguint_target(self.b.value.clone())?;
+        dst.write_biguint_target(self.diff.value.clone())?;
+        dst.write_target_bool(self.overflow)?;
+        Ok(())
+    }
+}
 #[derive(Debug, Default)]
 pub struct NonNativeBaseSubtractionGenerator<F: RichField + Extendable<D>, const D: usize> {
     a: NonNativeTarget<Secp256K1Base>,
