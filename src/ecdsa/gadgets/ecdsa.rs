@@ -242,7 +242,7 @@ pub fn gen_batch_ecdsa_data(
 }
 
 pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) {
-    // profiling_enable();
+    profiling_enable();
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
@@ -410,7 +410,45 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
 
     batch_verify_message_circuit(&mut builder, v_msg_target, v_sig_target, v_pk_target);
 
-    dbg!(builder.num_gates());
+    // let mut all_input_vec_targets = Vec::new();
+
+    // for i in 0..batch_num {
+    //     let msg_vec_target = v_msg_biguint_target[i].to_vec_target();
+    //     // builder.register_public_inputs(&msg_vec_target.clone());
+
+    //     let r_vec_target = v_r_biguint_target[i].to_vec_target();
+    //     // builder.register_public_inputs(&r_vec_target.clone());
+    //     let s_vec_target = v_s_biguint_target[i].to_vec_target();
+
+    //     // builder.register_public_inputs(&s_vec_target.clone());
+    //     let pk_x_vec_target = v_pk_x_biguint_target[i].to_vec_target();
+
+    //     // builder.register_public_inputs(&pk_x_vec_target.clone());
+
+    //     let pk_y_vec_target = v_pk_y_biguint_target[i].to_vec_target();
+    //     // builder.register_public_inputs(&pk_y_vec_target.clone());
+
+    //     let input_vec_target: Vec<plonky2::iop::target::Target> = msg_vec_target
+    //         .into_iter()
+    //         .chain(r_vec_target.into_iter())
+    //         .chain(s_vec_target.into_iter())
+    //         .chain(pk_x_vec_target.into_iter())
+    //         .chain(pk_y_vec_target.into_iter())
+    //         .collect();
+
+    //     all_input_vec_targets.extend(input_vec_target);
+    // }
+
+    // let h = builder
+    //     .hash_n_to_hash_no_pad::<<PoseidonGoldilocksConfig as GenericConfig<D>>::Hasher>(
+    //         all_input_vec_targets,
+    //     );
+
+    // let inputs_hash = builder.add_virtual_hash();
+    // builder.register_public_inputs(&inputs_hash.elements);
+
+    // builder.connect_hashes(inputs_hash, h);
+    // dbg!(builder.num_gates());
 
     // let data = builder.build_cuda::<C>();
     let gate_serializer = CustomGateSerializer;
@@ -422,10 +460,11 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
     };
 
     let path = std::path::Path::new("data/data_bytes");
+    // let data = builder.build_cuda::<C>();
     let data = if path.exists() {
         println!("Reading data");
         let circuit_data_bytes = std::fs::read(path).unwrap();
-        let circuit_data = CircuitData::<F, C, D>::from_bytes(
+        let circuit_data = CircuitDataOneDim::<F, C, D>::from_bytes(
             &circuit_data_bytes,
             &gate_serializer,
             &generator_serializer,
@@ -433,7 +472,7 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         .unwrap();
         circuit_data
     } else {
-        let data = builder.build::<C>();
+        let data = builder.build_cuda::<C>();
         let data_bytes = data
             .to_bytes(&gate_serializer, &generator_serializer)
             .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
@@ -445,37 +484,49 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         data
     };
 
-    let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
+    for _ in 0..50 {
+        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
-    let mut pw = PartialWitness::new();
-    for i in 0..batch_num {
-        let ECDSASignature { r, s } = sig_list[i];
+        let mut pw = PartialWitness::new();
+        for i in 0..batch_num {
+            let ECDSASignature { r, s } = sig_list[i];
 
-        let msg_biguint = msg_list[i].to_canonical_biguint();
-        let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-        let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-        let r_biguint = r.to_canonical_biguint();
-        let s_biguint = s.to_canonical_biguint();
+            let msg_biguint: num::BigUint = msg_list[i].to_canonical_biguint();
+            let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+            let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
 
-        pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-        pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-        pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-        pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-        pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+            // println!("msg_biguint[{}]: {}", i, msg_biguint);
+            // println!("pk_x_biguint[{}]: {}", i, pk_x_biguint);
+            // println!("pk_y_biguint[{}]: {}", i, pk_y_biguint);
+            // println!("r_biguint[{}]: {}", i, r_biguint);
+            // println!("s_biguint[{}]: {}", i, s_biguint);
+
+            pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+            pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+            pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+            pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+            pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+        }
+
+        let proof = data.prove(pw).unwrap();
+
+        println!("proof PIS {:?}", proof.public_inputs);
+        data.verify(proof).unwrap();
     }
-
-    let proof = data.prove(pw).unwrap();
-
-    println!("proof PIS {:?}", proof.public_inputs);
-    data.verify(proof).unwrap();
 }
 
 // #[cfg(test)]
 #[cfg(any(test, bench))]
 pub mod tests {
+    // use jemallocator::Jemalloc;
     use std::fs::{self, File};
     use std::io::prelude::*;
     use std::io::{BufReader, Write};
+
+    // #[global_allocator]
+    // static GLOBAL: Jemalloc = Jemalloc;
 
     use crate::ecdsa::curve::secp256k1;
     use crate::ecdsa::gadgets::biguint::WitnessBigUint;
