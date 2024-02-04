@@ -11,6 +11,7 @@ pub mod zkdsa;
 pub mod poseidon;
 pub mod ecdsa;
 pub mod zkaa;
+pub mod rlp;
 
 
 pub fn profiling_enable() {

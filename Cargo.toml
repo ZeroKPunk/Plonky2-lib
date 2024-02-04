@@ -38,5 +38,5 @@ name = "perf"
 path = "src/bin/perf.rs"
 
 
-# [patch."https://github.com/orbiter/plonky2-u32.git"]
-# plonky2_u32 = { path = "../plonky2-u32"}
+[patch."https://github.com/ZeroKPunk/plonky2-u32.git"]
+plonky2_u32 = { path = "../plonky2-u32"}

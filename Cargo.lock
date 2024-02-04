@@ -51,17 +51,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4668cab20f66d8d020e1fbc0ebe47217433c1b6c8f2040faf858554e394ace6"
 
 [[package]]
-name = "ark-std"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94893f1e0c6eeab764ade8dc4c0db24caf4fe7cbbaafc0eba0a9030f447b5185"
-dependencies = [
- "colored",
- "num-traits",
- "rand",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -179,17 +168,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f2c685bad3eb3d45a01354cedb7d5faa66194d1d58ba6e267a8de788f79db38"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "colored"
-version = "2.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2674ec482fbc38012cf31e6c42ba0177b431a0cb6f15fe40efa5aab1bda516f6"
-dependencies = [
- "is-terminal",
- "lazy_static",
- "windows-sys",
 ]
 
 [[package]]
@@ -955,7 +933,6 @@ version = "0.1.4"
 dependencies = [
  "ahash",
  "anyhow",
- "ark-std",
  "cc",
  "getrandom",
  "hashbrown",
@@ -985,6 +962,7 @@ dependencies = [
  "num",
  "plonky2_util",
  "rand",
+ "rayon",
  "serde",
  "static_assertions",
  "unroll",
@@ -1000,7 +978,6 @@ dependencies = [
 [[package]]
 name = "plonky2_u32"
 version = "0.1.0"
-source = "git+https://github.com/ZeroKPunk/plonky2-u32.git?branch=main#552acaecfcb2de136135674f9bb733425ccbf549"
 dependencies = [
  "anyhow",
  "itertools 0.10.5",
